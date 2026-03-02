@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.pyc
+mobile/
+docs/
+scripts/
+.DS_Store
+*.log
+*.pem
+*.key
+backend/soda_agent/.env
+backend/.adk/
+backend/soda_agent/.adk/
