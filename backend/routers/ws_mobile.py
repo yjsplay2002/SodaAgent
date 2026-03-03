@@ -68,6 +68,13 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         response_modalities=["AUDIO"],
         output_audio_transcription=types.AudioTranscriptionConfig(),
         input_audio_transcription=types.AudioTranscriptionConfig(),
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name="Aoede"  # female voice
+                )
+            )
+        ),
     )
 
     async def forward_agent_events():
@@ -146,11 +153,42 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
 
 async def _send_event_to_client(websocket: WebSocket, event) -> None:
     """Convert ADK event to client-friendly JSON and send."""
+    # 1. Output transcription: model의 음성 답변 텍스트 (AUDIO 모드의 실제 응답)
+    #    event.content.parts 가 아닌 별도 필드로 제공됨 (ADK Live 특성)
+    output_transcription = getattr(event, 'output_transcription', None)
+    if output_transcription:
+        parts = getattr(output_transcription, 'parts', None)
+        if parts:
+            for part in parts:
+                if getattr(part, 'text', None):
+                    await websocket.send_json(
+                        {"type": "transcript", "role": "model", "text": part.text}
+                    )
+        elif isinstance(output_transcription, str) and output_transcription:
+            await websocket.send_json(
+                {"type": "transcript", "role": "model", "text": output_transcription}
+            )
+
+    # 2. Input transcription: 사용자 음성 텍스트
+    input_transcription = getattr(event, 'input_transcription', None)
+    if input_transcription:
+        parts = getattr(input_transcription, 'parts', None)
+        if parts:
+            for part in parts:
+                if getattr(part, 'text', None):
+                    await websocket.send_json(
+                        {"type": "transcript", "role": "user", "text": part.text}
+                    )
+        elif isinstance(input_transcription, str) and input_transcription:
+            await websocket.send_json(
+                {"type": "transcript", "role": "user", "text": input_transcription}
+            )
+
+    # 3. event.content.parts: 오디오 데이터, 함수 호출, (필터된) thinking 토큰
     if not event.content or not event.content.parts:
         if event.is_final_response():
             await websocket.send_json({"type": "turn_complete"})
         return
-
     for part in event.content.parts:
         # Audio response
         if part.inline_data and part.inline_data.mime_type and "audio" in part.inline_data.mime_type:
@@ -162,17 +200,19 @@ async def _send_event_to_client(websocket: WebSocket, event) -> None:
                 }
             )
 
-        # Text response (model transcript)
-        elif part.text:
-            role = event.content.role or "model"
-            is_thought = getattr(part, 'thought', False)
-            if is_thought:
-                logger.debug("Skipping thought: %s", part.text[:60])
+        # Text: thought 필터 (thinking 토큰은 클라이언트로 보내지 않음)
+        elif getattr(part, 'text', None):
+            # part.thought 가 True 이면 thinking 토큰 → skip
+            if getattr(part, 'thought', False) is True:
+                logger.debug("Skipping thought: %s", part.text[:80])
                 continue
-            await websocket.send_json(
-                {"type": "transcript", "role": role, "text": part.text}
-            )
-
+            # output_transcription 이 없는 경우에만 text를 transcript로 전송
+            # (output_transcription 이 있으면 이미 위에서 처리됨)
+            if not output_transcription:
+                role = event.content.role or "model"
+                await websocket.send_json(
+                    {"type": "transcript", "role": role, "text": part.text}
+                )
         # Function call
         elif part.function_call:
             await websocket.send_json(

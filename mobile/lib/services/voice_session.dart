@@ -64,7 +64,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
       state = state.copyWith(connectionState: s);
     });
 
-    _msgSub = _ws.messages.listen(_handleMessage);
+    _msgSub = _ws.messages.listen((msg) async => _handleMessage(msg));
   }
 
   void connect(String serverUrl, String userId) {
@@ -123,14 +123,16 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     );
   }
 
-  void _handleMessage(WsMessage msg) {
+  Future<void> _handleMessage(WsMessage msg) async {
     final textPreview = msg.text != null && msg.text!.length > 60 ? msg.text!.substring(0, 60) : msg.text;
     debugPrint('VoiceSession: handleMessage type=${msg.type} role=${msg.role} text=$textPreview');
     switch (msg.type) {
       case 'audio':
         if (msg.audioData != null) {
+          // 시작 시 재생 초기화 (no-op 이면 이미 시작됨)
+          await _audio.startPlayback();
+          _audio.feedAudio(msg.audioData!);
           state = state.copyWith(voiceState: VoiceState.speaking);
-          // TODO: Play audio on real device
         }
       case 'transcript':
         if (msg.text == null || msg.text!.isEmpty) {
@@ -152,18 +154,21 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
         state = state.copyWith(currentToolCall: msg.toolName);
       case 'turn_complete':
         debugPrint('VoiceSession: Turn complete');
+        // 재생 중이면 정지
+        await _audio.stopPlayback();
         state = state.copyWith(
           voiceState: state.micAvailable ? VoiceState.listening : VoiceState.idle,
           currentToolCall: null,
         );
       case 'error':
         debugPrint('VoiceSession: Error=${msg.error}');
-        final transcripts = [
+        await _audio.stopPlayback();
+        final errorTranscripts = [
           ...state.transcripts,
           TranscriptEntry(role: 'system', text: 'Error: ${msg.error}'),
         ];
         state = state.copyWith(
-          transcripts: transcripts,
+          transcripts: errorTranscripts,
           voiceState: state.micAvailable ? VoiceState.listening : VoiceState.idle,
         );
       default:
