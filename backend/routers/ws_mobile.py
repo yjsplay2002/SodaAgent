@@ -107,6 +107,10 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
 
     live_queue = LiveRequestQueue()
 
+    # Shared flag: set by process_client_messages when user sends new input,
+    # cleared by forward_agent_events to reset nudge guard.
+    new_user_turn = asyncio.Event()
+
     run_config = RunConfig(
         response_modalities=["AUDIO"],
         output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -142,6 +146,15 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             ):
                 # --- DEBUG: log every event from ADK ---
                 _log_event_debug(event)
+                # Check if a new user turn started (set by process_client_messages)
+                if new_user_turn.is_set():
+                    new_user_turn.clear()
+                    already_nudged = False
+                    pending_tool_name = None
+                    pending_tool_args = {}
+                    got_audio_after_tool = False
+                    turn_complete_count = 0
+                    streaming_audio = False
                 if event.content and event.content.parts:
                     for part in event.content.parts:
                         if part.function_call:
@@ -167,16 +180,18 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             got_audio_after_tool = True
                             streaming_audio = True
                 # Barge-in detection: user speaking while model streams audio
+                # NOTE: Do NOT reset already_nudged here — input_transcription
+                # fires continuously from ambient mic audio and would defeat
+                # the nudge-once-per-turn guard. Reset happens only when a
+                # genuinely new user message arrives (see new_user_turn flag).
                 in_tx = getattr(event, 'input_transcription', None)
-                if in_tx:
-                    already_nudged = False
-                    if streaming_audio:
-                        logger.info("BARGE-IN: User speaking while streaming audio")
-                        try:
-                            await websocket.send_json({"type": "interrupted"})
-                        except WebSocketDisconnect:
-                            break
-                        streaming_audio = False
+                if in_tx and streaming_audio:
+                    logger.info("BARGE-IN: User speaking while streaming audio")
+                    try:
+                        await websocket.send_json({"type": "interrupted"})
+                    except WebSocketDisconnect:
+                        break
+                    streaming_audio = False
                 # Forward event to client as usual
                 try:
                     await _send_event_to_client(websocket, event)
@@ -262,9 +277,11 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                         )
                     )
 
+                    new_user_turn.set()  # Text input = new user turn
                 elif msg_type == "end_turn":
                     live_queue.send(LiveRequest(end_of_turn=True))
 
+                    new_user_turn.set()  # Signal new turn to reset nudge guard
         except WebSocketDisconnect:
             logger.info("Client disconnected: user=%s", user_id)
         except Exception as e:

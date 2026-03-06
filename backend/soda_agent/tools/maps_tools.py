@@ -4,8 +4,12 @@ Uses GOOGLE_MAPS_API_KEY or GOOGLE_API_KEY env var.
 Falls back to mock data when no key is configured.
 
 Required GCP APIs (enable via console or gcloud):
-  - Directions API
-  - Places API
+  - Directions API (directions-backend.googleapis.com)
+  - Places API (places-backend.googleapis.com)
+
+Note: Google Directions API does NOT support driving directions in
+South Korea due to government regulations. We automatically fall back
+to transit mode when driving returns ZERO_RESULTS.
 """
 
 import logging
@@ -22,6 +26,11 @@ _MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY") or os.environ.get(
 )
 _DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
 _PLACES_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+
+if _MAPS_API_KEY:
+    logger.info("Maps API key loaded (len=%d)", len(_MAPS_API_KEY))
+else:
+    logger.warning("No Maps API key found — using mock data")
 
 
 def _strip_html(text: str) -> str:
@@ -41,13 +50,57 @@ def _traffic_level(leg: dict) -> str:
     return "light"
 
 
+def _call_directions(origin: str, destination: str, mode: str = "driving",
+                     departure_time: str | None = None) -> dict | None:
+    """Call Google Directions API with automatic transit fallback.
+
+    Returns the raw API response dict, or None on failure.
+    If driving returns ZERO_RESULTS (e.g. South Korea), retries with transit.
+    """
+    params: dict = {
+        "origin": origin,
+        "destination": destination,
+        "mode": mode,
+        "key": _MAPS_API_KEY,
+    }
+    if departure_time:
+        params["departure_time"] = departure_time
+
+    resp = httpx.get(_DIRECTIONS_URL, params=params, timeout=10)
+    data = resp.json()
+
+    status = data.get("status", "UNKNOWN")
+    error_msg = data.get("error_message", "")
+
+    if status == "OK" and data.get("routes"):
+        return data
+
+    # Driving not available in this region → try transit
+    if status == "ZERO_RESULTS" and mode == "driving":
+        logger.info(
+            "Directions API: ZERO_RESULTS for driving, retrying with transit"
+        )
+        params["mode"] = "transit"
+        params.pop("departure_time", None)  # transit doesn't use departure_time
+        resp = httpx.get(_DIRECTIONS_URL, params=params, timeout=10)
+        data = resp.json()
+        if data.get("status") == "OK" and data.get("routes"):
+            return data
+
+    logger.warning(
+        "Directions API failed: status=%s error=%s origin=%s dest=%s mode=%s",
+        status, error_msg, origin, destination, mode,
+    )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # get_directions
 # ---------------------------------------------------------------------------
 
 
 def get_directions(destination: str, origin: str = "current location") -> dict:
-    """Gets driving directions to a destination.
+    """Gets directions to a destination.
 
     Args:
         destination: The destination address or place name.
@@ -60,20 +113,8 @@ def get_directions(destination: str, origin: str = "current location") -> dict:
         return _mock_directions(destination)
 
     try:
-        resp = httpx.get(
-            _DIRECTIONS_URL,
-            params={
-                "origin": origin,
-                "destination": destination,
-                "mode": "driving",
-                "key": _MAPS_API_KEY,
-            },
-            timeout=10,
-        )
-        data = resp.json()
-
-        if data["status"] != "OK" or not data.get("routes"):
-            logger.warning("Directions API: %s", data.get("status"))
+        data = _call_directions(origin, destination)
+        if not data:
             return {
                 "status": "error",
                 "message": f"Could not find directions to {destination}",
@@ -83,6 +124,9 @@ def get_directions(destination: str, origin: str = "current location") -> dict:
         leg = route["legs"][0]
 
         steps = [_strip_html(s["html_instructions"]) for s in leg["steps"][:5]]
+        mode = route.get("legs", [{}])[0].get("steps", [{}])[0].get(
+            "travel_mode", "DRIVING"
+        )
 
         return {
             "status": "success",
@@ -90,6 +134,7 @@ def get_directions(destination: str, origin: str = "current location") -> dict:
             "origin": leg["start_address"],
             "distance": leg["distance"]["text"],
             "duration": leg["duration"]["text"],
+            "travel_mode": mode.lower(),
             "route_summary": route.get("summary", ""),
             "steps": steps,
         }
@@ -117,21 +162,8 @@ def get_eta(destination: str, origin: str = "current location") -> dict:
         return _mock_eta(destination)
 
     try:
-        resp = httpx.get(
-            _DIRECTIONS_URL,
-            params={
-                "origin": origin,
-                "destination": destination,
-                "mode": "driving",
-                "departure_time": "now",
-                "key": _MAPS_API_KEY,
-            },
-            timeout=10,
-        )
-        data = resp.json()
-
-        if data["status"] != "OK" or not data.get("routes"):
-            logger.warning("ETA API: %s", data.get("status"))
+        data = _call_directions(origin, destination, departure_time="now")
+        if not data:
             return {
                 "status": "error",
                 "message": f"Could not calculate ETA to {destination}",
@@ -193,7 +225,8 @@ def search_places(query: str, category: str = "general") -> dict:
         data = resp.json()
 
         if data["status"] != "OK" or not data.get("results"):
-            logger.warning("Places API: %s", data.get("status"))
+            logger.warning("Places API: %s %s", data.get("status"),
+                           data.get("error_message", ""))
             return {
                 "status": "error",
                 "message": f"No places found for '{query}'",
