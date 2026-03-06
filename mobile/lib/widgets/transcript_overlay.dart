@@ -5,11 +5,17 @@ import '../services/voice_session.dart';
 class TranscriptOverlay extends StatefulWidget {
   final List<TranscriptEntry> transcripts;
   final VoiceState voiceState;
+  final String? playingAudioPath;
+  final void Function(String path)? onPlayAudio;
+  final VoidCallback? onStopAudio;
 
   const TranscriptOverlay({
     super.key,
     required this.transcripts,
     required this.voiceState,
+    this.playingAudioPath,
+    this.onPlayAudio,
+    this.onStopAudio,
   });
 
   @override
@@ -48,7 +54,8 @@ class _TranscriptOverlayState extends State<TranscriptOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    final showTyping = widget.voiceState == VoiceState.thinking ||
+    final showTyping =
+        widget.voiceState == VoiceState.thinking ||
         widget.voiceState == VoiceState.speaking;
     final itemCount = widget.transcripts.length + (showTyping ? 1 : 0);
 
@@ -70,7 +77,17 @@ class _TranscriptOverlayState extends State<TranscriptOverlay> {
       itemCount: itemCount,
       itemBuilder: (context, index) {
         if (index < widget.transcripts.length) {
-          return _TranscriptBubble(entry: widget.transcripts[index]);
+          final entry = widget.transcripts[index];
+          return _TranscriptBubble(
+            entry: entry,
+            isPlayingAudio:
+                entry.audioPath != null &&
+                entry.audioPath == widget.playingAudioPath,
+            onPlayAudio: entry.audioPath != null
+                ? () => widget.onPlayAudio?.call(entry.audioPath!)
+                : null,
+            onStopAudio: widget.onStopAudio,
+          );
         }
         // Typing indicator as last item
         return const _TypingIndicator();
@@ -81,13 +98,22 @@ class _TranscriptOverlayState extends State<TranscriptOverlay> {
 
 class _TranscriptBubble extends StatelessWidget {
   final TranscriptEntry entry;
+  final bool isPlayingAudio;
+  final VoidCallback? onPlayAudio;
+  final VoidCallback? onStopAudio;
 
-  const _TranscriptBubble({required this.entry});
+  const _TranscriptBubble({
+    required this.entry,
+    this.isPlayingAudio = false,
+    this.onPlayAudio,
+    this.onStopAudio,
+  });
 
   @override
   Widget build(BuildContext context) {
     final isUser = entry.role == 'user';
     final isSystem = entry.role == 'system';
+    final hasAudio = entry.audioPath != null;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
@@ -102,21 +128,66 @@ class _TranscriptBubble extends StatelessWidget {
             color: isSystem
                 ? Colors.red.withValues(alpha: 0.15)
                 : isUser
-                    ? Colors.white.withValues(alpha: 0.1)
-                    : Colors.blue.withValues(alpha: 0.12),
+                ? Colors.white.withValues(alpha: 0.1)
+                : Colors.blue.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(16),
           ),
-          child: Text(
-            entry.text,
-            style: TextStyle(
-              color: isSystem
-                  ? Colors.red.shade300
-                  : Colors.white.withValues(alpha: 0.9),
-              fontSize: 14,
-              height: 1.4,
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                entry.text,
+                style: TextStyle(
+                  color: isSystem
+                      ? Colors.red.shade300
+                      : Colors.white.withValues(alpha: 0.9),
+                  fontSize: 14,
+                  height: 1.4,
+                ),
+              ),
+              if (hasAudio && !isUser && !isSystem) ...[
+                const SizedBox(height: 6),
+                _AudioPlayRow(
+                  isPlaying: isPlayingAudio,
+                  onTap: isPlayingAudio ? onStopAudio : onPlayAudio,
+                ),
+              ],
+            ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _AudioPlayRow extends StatelessWidget {
+  final bool isPlaying;
+  final VoidCallback? onTap;
+
+  const _AudioPlayRow({required this.isPlaying, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isPlaying ? Icons.stop_circle_outlined : Icons.play_circle_outlined,
+            color: Colors.white.withValues(alpha: 0.6),
+            size: 20,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            isPlaying ? 'Stop' : 'Play',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 12,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -168,7 +239,9 @@ class _TypingIndicatorState extends State<_TypingIndicator>
                 children: List.generate(3, (i) {
                   final delay = i * 0.2;
                   final t = (_controller.value - delay) % 1.0;
-                  final opacity = (t < 0.5) ? 0.3 + 0.7 * (t * 2) : 0.3 + 0.7 * (1 - (t - 0.5) * 2);
+                  final opacity = (t < 0.5)
+                      ? 0.3 + 0.7 * (t * 2)
+                      : 0.3 + 0.7 * (1 - (t - 0.5) * 2);
                   return Padding(
                     padding: EdgeInsets.only(right: i < 2 ? 4 : 0),
                     child: Opacity(

@@ -74,6 +74,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               child: TranscriptOverlay(
                 transcripts: session.transcripts,
                 voiceState: session.voiceState,
+                playingAudioPath: session.playingAudioPath,
+                onPlayAudio: (path) =>
+                    ref.read(voiceSessionProvider.notifier).playAudio(path),
+                onStopAudio: () =>
+                    ref.read(voiceSessionProvider.notifier).stopAudio(),
               ),
             ),
             _buildTextInput(session),
