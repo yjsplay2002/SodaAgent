@@ -168,12 +168,22 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
       if (path == null) return;
       // Associate with the last model transcript that has no audio yet
       final transcripts = [...state.transcripts];
+      bool linked = false;
       for (int i = transcripts.length - 1; i >= 0; i--) {
         if (transcripts[i].role == 'model' &&
             transcripts[i].audioPath == null) {
           transcripts[i] = transcripts[i].withAudio(path);
+          linked = true;
           break;
         }
+      }
+      if (!linked) {
+        // No model transcript to link — create an audio-only entry
+        transcripts.add(TranscriptEntry(
+          role: 'model',
+          text: '\u{1F50A}',
+          audioPath: path,
+        ));
       }
       state = state.copyWith(transcripts: transcripts);
     });

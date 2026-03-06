@@ -56,3 +56,4 @@ service-account.json
 
 # Claude Code
 .claude/
+.sisyphus/
