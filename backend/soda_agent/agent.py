@@ -19,7 +19,7 @@ from soda_agent.tools.vehicle_tools import get_vehicle_status
 # Text mode (adk web, Runner.run_async): gemini-2.5-pro with sub-agents
 # Live audio mode (ws_mobile.py): native-audio-preview with flat tools (no sub-agents)
 
-LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+LIVE_MODEL = "gemini-2.5-flash-preview-native-audio-dialog"
 TEXT_MODEL = "gemini-2.5-pro"
 
 # Text mode: multi-agent with delegation
