@@ -140,11 +140,20 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
       case 'tool_call':
         debugPrint('VoiceSession: Tool call=${msg.toolName}');
         state = state.copyWith(currentToolCall: msg.toolName);
-        // Do NOT stop the player here.
+      case 'interrupted':
+        // Barge-in: user spoke while model was responding.
+        // Flush buffered audio so the new response plays cleanly.
+        debugPrint('VoiceSession: Barge-in — flushing audio buffer');
+        _audio.stopPlayback();
+        state = state.copyWith(
+          voiceState: VoiceState.listening,
+          currentToolCall: null,
+        );
+
+      case 'turn_complete':
+        // Don't stop player — let buffered audio play through naturally.
         // Audio data arrives faster than real-time playback, so the
-        // player buffer still has seconds of audio remaining when
-        // turn_complete arrives.  Let it play through naturally.
-        // The player stays open and ready for the next turn's audio.
+        // player buffer still has seconds of audio remaining.
         state = state.copyWith(
           voiceState: state.micAvailable
               ? VoiceState.listening

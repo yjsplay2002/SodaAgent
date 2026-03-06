@@ -93,6 +93,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         - JSON: {"type": "transcript", "role": "user", "text": "..."}
         - JSON: {"type": "tool_call", "name": "...", "args": {...}}
         - JSON: {"type": "turn_complete"}
+        - JSON: {"type": "interrupted"}  (barge-in: user spoke during model response)
         - JSON: {"type": "error", "message": "..."}
     """
     await websocket.accept()
@@ -131,6 +132,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         got_audio_after_tool = False
         turn_complete_count = 0
         already_nudged = False  # Prevents infinite nudge → tool_call → nudge loop
+        streaming_audio = False  # True while sending audio chunks to client
 
         try:
             async for event in runner.run_live(
@@ -163,10 +165,18 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             and "audio" in part.inline_data.mime_type
                         ):
                             got_audio_after_tool = True
-                # Reset nudge lock on new user input
+                            streaming_audio = True
+                # Barge-in detection: user speaking while model streams audio
                 in_tx = getattr(event, 'input_transcription', None)
                 if in_tx:
                     already_nudged = False
+                    if streaming_audio:
+                        logger.info("BARGE-IN: User speaking while streaming audio")
+                        try:
+                            await websocket.send_json({"type": "interrupted"})
+                        except WebSocketDisconnect:
+                            break
+                        streaming_audio = False
                 # Forward event to client as usual
                 try:
                     await _send_event_to_client(websocket, event)
@@ -359,6 +369,7 @@ async def _send_event_to_client(websocket: WebSocket, event) -> None:
         if event.is_final_response() and not has_transcription:
             await websocket.send_json({"type": "turn_complete"})
         return
+    sent_audio = False
     for part in event.content.parts:
         # Audio response
         if part.inline_data and part.inline_data.mime_type and "audio" in part.inline_data.mime_type:
