@@ -29,14 +29,13 @@ class VoiceSessionState {
     List<TranscriptEntry>? transcripts,
     String? currentToolCall,
     bool? micAvailable,
-  }) =>
-      VoiceSessionState(
-        voiceState: voiceState ?? this.voiceState,
-        connectionState: connectionState ?? this.connectionState,
-        transcripts: transcripts ?? this.transcripts,
-        currentToolCall: currentToolCall,
-        micAvailable: micAvailable ?? this.micAvailable,
-      );
+  }) => VoiceSessionState(
+    voiceState: voiceState ?? this.voiceState,
+    connectionState: connectionState ?? this.connectionState,
+    transcripts: transcripts ?? this.transcripts,
+    currentToolCall: currentToolCall,
+    micAvailable: micAvailable ?? this.micAvailable,
+  );
 }
 
 class TranscriptEntry {
@@ -44,11 +43,8 @@ class TranscriptEntry {
   final String text;
   final DateTime timestamp;
 
-  TranscriptEntry({
-    required this.role,
-    required this.text,
-    DateTime? timestamp,
-  }) : timestamp = timestamp ?? DateTime.now();
+  TranscriptEntry({required this.role, required this.text, DateTime? timestamp})
+    : timestamp = timestamp ?? DateTime.now();
 }
 
 class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
@@ -58,14 +54,17 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   StreamSubscription? _stateSub;
   StreamSubscription? _micSub;
 
+
   VoiceSessionNotifier(this._ws, this._audio)
-      : super(const VoiceSessionState()) {
+    : super(const VoiceSessionState()) {
     _stateSub = _ws.stateStream.listen((s) {
       state = state.copyWith(connectionState: s);
     });
 
-    _msgSub = _ws.messages.listen((msg) async => _handleMessage(msg));
+    _msgSub = _ws.messages.listen(_handleMessage);
   }
+
+  // ---------- connection ----------
 
   void connect(String serverUrl, String userId) {
     final wsUrl = serverUrl
@@ -87,26 +86,18 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
       );
     } else {
       debugPrint('VoiceSession: Mic not available, text-only mode');
-      state = state.copyWith(
-        voiceState: VoiceState.idle,
-        micAvailable: false,
-      );
+      state = state.copyWith(voiceState: VoiceState.idle, micAvailable: false);
     }
   }
 
   void toggleMic() async {
     if (state.connectionState != WsConnectionState.connected) return;
     if (state.micAvailable) {
-      // Stop recording
       _micSub?.cancel();
       await _audio.stopRecording();
-      state = state.copyWith(
-        voiceState: VoiceState.idle,
-        micAvailable: false,
-      );
+      state = state.copyWith(voiceState: VoiceState.idle, micAvailable: false);
       debugPrint('VoiceSession: Mic stopped');
     } else {
-      // Start recording
       _startMicStream();
     }
   }
@@ -123,60 +114,66 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     );
   }
 
-  Future<void> _handleMessage(WsMessage msg) async {
-    final textPreview = msg.text != null && msg.text!.length > 60 ? msg.text!.substring(0, 60) : msg.text;
-    debugPrint('VoiceSession: handleMessage type=${msg.type} role=${msg.role} text=$textPreview');
+  // ---------- message handler ----------
+
+  void _handleMessage(WsMessage msg) {
     switch (msg.type) {
       case 'audio':
         if (msg.audioData != null) {
-          // 시작 시 재생 초기화 (no-op 이면 이미 시작됨)
-          await _audio.startPlayback();
-          _audio.feedAudio(msg.audioData!);
+          _audio.startPlayback().then((_) {
+            _audio.feedAudio(msg.audioData!);
+          });
           state = state.copyWith(voiceState: VoiceState.speaking);
         }
       case 'transcript':
-        if (msg.text == null || msg.text!.isEmpty) {
-          debugPrint('VoiceSession: Skipping empty transcript');
-          return;
-        }
+        if (msg.text == null || msg.text!.isEmpty) return;
         final transcripts = [
           ...state.transcripts,
           TranscriptEntry(role: msg.role ?? 'model', text: msg.text!.trim()),
         ];
-        debugPrint('VoiceSession: Transcript count now=${transcripts.length}');
         state = state.copyWith(
           transcripts: transcripts,
-          voiceState:
-              msg.role == 'user' ? VoiceState.thinking : VoiceState.speaking,
+          voiceState: msg.role == 'user'
+              ? VoiceState.thinking
+              : VoiceState.speaking,
         );
       case 'tool_call':
         debugPrint('VoiceSession: Tool call=${msg.toolName}');
         state = state.copyWith(currentToolCall: msg.toolName);
-      case 'turn_complete':
-        debugPrint('VoiceSession: Turn complete');
-        // 재생 중이면 정지
-        await _audio.stopPlayback();
+        // Do NOT stop the player here.
+        // Audio data arrives faster than real-time playback, so the
+        // player buffer still has seconds of audio remaining when
+        // turn_complete arrives.  Let it play through naturally.
+        // The player stays open and ready for the next turn's audio.
         state = state.copyWith(
-          voiceState: state.micAvailable ? VoiceState.listening : VoiceState.idle,
+          voiceState: state.micAvailable
+              ? VoiceState.listening
+              : VoiceState.idle,
           currentToolCall: null,
         );
+
       case 'error':
         debugPrint('VoiceSession: Error=${msg.error}');
-        await _audio.stopPlayback();
+
+        _audio.stopPlayback();
         final errorTranscripts = [
           ...state.transcripts,
           TranscriptEntry(role: 'system', text: 'Error: ${msg.error}'),
         ];
         state = state.copyWith(
           transcripts: errorTranscripts,
-          voiceState: state.micAvailable ? VoiceState.listening : VoiceState.idle,
+          voiceState: state.micAvailable
+              ? VoiceState.listening
+              : VoiceState.idle,
         );
+
       default:
         debugPrint('VoiceSession: Unknown message type=${msg.type}');
     }
   }
 
   void disconnect() {
+
     _micSub?.cancel();
     _audio.stopRecording();
     _ws.disconnect();
@@ -188,6 +185,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 
   @override
   void dispose() {
+
     _msgSub?.cancel();
     _stateSub?.cancel();
     _micSub?.cancel();
@@ -198,7 +196,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 
 final voiceSessionProvider =
     StateNotifierProvider<VoiceSessionNotifier, VoiceSessionState>((ref) {
-  final ws = ref.read(webSocketServiceProvider);
-  final audio = ref.read(audioServiceProvider);
-  return VoiceSessionNotifier(ws, audio);
-});
+      final ws = ref.read(webSocketServiceProvider);
+      final audio = ref.read(audioServiceProvider);
+      return VoiceSessionNotifier(ws, audio);
+    });

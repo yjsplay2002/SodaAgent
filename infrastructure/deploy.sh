@@ -46,7 +46,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --session-affinity \
     --allow-unauthenticated \
     --set-secrets "GOOGLE_API_KEY=google-api-key:latest" \
-    --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=FALSE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION"
+    --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION"
 
 # 3. Get the service URL
 echo "[3/4] Getting service URL..."

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_sound/flutter_sound.dart';
+import 'package:logger/logger.dart';
 import 'package:record/record.dart';
 /// Handles microphone capture and speaker playback.
 ///
@@ -9,7 +10,7 @@ import 'package:record/record.dart';
   /// Playback:  PCM 16-bit 24kHz mono ← Gemini Live API (Aoede female voice)
   class AudioService {
   final AudioRecorder _recorder = AudioRecorder();
-  final FlutterSoundPlayer _player = FlutterSoundPlayer();
+  final FlutterSoundPlayer _player = FlutterSoundPlayer(logLevel: Level.error);
   StreamSubscription? _recorderSub;
   final _audioController = StreamController<Uint8List>.broadcast();
   bool _isRecording = false;

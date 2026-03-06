@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ .
 
 # Create .env for ADK (env vars are set via Cloud Run, but ADK reads from .env)
-RUN echo "GOOGLE_GENAI_USE_VERTEXAI=FALSE" > soda_agent/.env
+RUN echo "GOOGLE_GENAI_USE_VERTEXAI=TRUE" > soda_agent/.env
 
 EXPOSE 8080
 
