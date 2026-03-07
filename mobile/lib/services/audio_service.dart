@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:logger/logger.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 /// Handles microphone capture, speaker playback, and audio file operations.
@@ -13,11 +12,9 @@ import 'package:record/record.dart';
 /// Recording: PCM 16-bit 16kHz mono → Gemini Live API
 /// Playback:  PCM 16-bit 24kHz mono ← Gemini Live API (Aoede female voice)
 class AudioService {
-  final AudioRecorder _recorder = AudioRecorder();
-  final FlutterSoundPlayer _player = FlutterSoundPlayer(logLevel: Level.error);
-  final FlutterSoundPlayer _filePlayer = FlutterSoundPlayer(
-    logLevel: Level.error,
-  );
+  AudioRecorder? _recorder;
+  FlutterSoundPlayer? _player;
+  FlutterSoundPlayer? _filePlayer;
 
   StreamSubscription? _recorderSub;
   final _audioController = StreamController<Uint8List>.broadcast();
@@ -27,23 +24,33 @@ class AudioService {
   bool _isPlaying = false;
   bool _filePlayerOpened = false;
   String? currentlyPlayingFile;
+  double _liveVolume = 1.0;
 
   Stream<Uint8List> get audioStream => _audioController.stream;
   bool get isRecording => _isRecording;
   bool get isPlaying => _isPlaying;
 
+  AudioRecorder get _recorderInstance => _recorder ??= AudioRecorder();
+
+  FlutterSoundPlayer get _livePlayer =>
+      _player ??= FlutterSoundPlayer(logLevel: Level.error);
+
+  FlutterSoundPlayer get _savedFilePlayer =>
+      _filePlayer ??= FlutterSoundPlayer(logLevel: Level.error);
+
   Future<bool> hasPermission() async {
-    return await _recorder.hasPermission();
+    return await _recorderInstance.hasPermission();
   }
 
   // ─── Recording ───
 
   Future<bool> startRecording() async {
     if (_isRecording) return true;
-    final hasPerms = await _recorder.hasPermission();
+    final recorder = _recorderInstance;
+    final hasPerms = await recorder.hasPermission();
     if (!hasPerms) return false;
     try {
-      final stream = await _recorder.startStream(
+      final stream = await recorder.startStream(
         const RecordConfig(
           encoder: AudioEncoder.pcm16bits,
           sampleRate: 16000,
@@ -70,7 +77,7 @@ class AudioService {
     await _recorderSub?.cancel();
     _recorderSub = null;
     try {
-      await _recorder.stop();
+      await _recorder?.stop();
     } catch (_) {}
     _isRecording = false;
   }
@@ -79,7 +86,7 @@ class AudioService {
 
   Future<void> _ensurePlayerOpen() async {
     if (!_playerOpened) {
-      await _player.openPlayer();
+      await _livePlayer.openPlayer();
       _playerOpened = true;
       debugPrint('AudioService: Player opened');
     }
@@ -88,29 +95,46 @@ class AudioService {
   Future<void> startPlayback({int sampleRate = 24000}) async {
     if (_isPlaying) return;
     await _ensurePlayerOpen();
-    await _player.startPlayerFromStream(
+    await _livePlayer.startPlayerFromStream(
       codec: Codec.pcm16,
       interleaved: false,
       numChannels: 1,
       sampleRate: sampleRate,
       bufferSize: 8192,
     );
+    await _livePlayer.setVolume(_liveVolume);
     _isPlaying = true;
     debugPrint('AudioService: Playback started at ${sampleRate}Hz');
   }
 
   void feedAudio(Uint8List pcmData) {
     if (!_isPlaying) return;
-    _player.uint8ListSink?.add(pcmData);
+    _livePlayer.uint8ListSink?.add(pcmData);
   }
 
   Future<void> stopPlayback() async {
     if (!_isPlaying) return;
     try {
-      await _player.stopPlayer();
+      await _player?.stopPlayer();
     } catch (_) {}
     _isPlaying = false;
     debugPrint('AudioService: Playback stopped');
+  }
+
+  Future<void> duckPlayback({double volume = 0.2}) async {
+    _liveVolume = volume.clamp(0.0, 1.0);
+    if (!_playerOpened) return;
+    try {
+      await _player?.setVolume(_liveVolume);
+    } catch (_) {}
+  }
+
+  Future<void> restorePlaybackVolume() async {
+    _liveVolume = 1.0;
+    if (!_playerOpened) return;
+    try {
+      await _player?.setVolume(_liveVolume);
+    } catch (_) {}
   }
 
   // ─── WAV File Save ───
@@ -122,9 +146,8 @@ class AudioService {
   }) async {
     if (pcmChunks.isEmpty) return null;
     try {
-      final dir = await getTemporaryDirectory();
       final path =
-          '${dir.path}/soda_${DateTime.now().millisecondsSinceEpoch}.wav';
+          '${Directory.systemTemp.path}/soda_${DateTime.now().millisecondsSinceEpoch}.wav';
 
       int dataSize = 0;
       for (final chunk in pcmChunks) {
@@ -185,7 +208,7 @@ class AudioService {
 
   Future<void> _ensureFilePlayerOpen() async {
     if (!_filePlayerOpened) {
-      await _filePlayer.openPlayer();
+      await _savedFilePlayer.openPlayer();
       _filePlayerOpened = true;
       debugPrint('AudioService: File player opened');
     }
@@ -196,7 +219,7 @@ class AudioService {
     await stopFilePlayback();
     await _ensureFilePlayerOpen();
     currentlyPlayingFile = path;
-    await _filePlayer.startPlayer(
+    await _savedFilePlayer.startPlayer(
       fromURI: path,
       codec: Codec.pcm16WAV,
       whenFinished: () {
@@ -211,7 +234,7 @@ class AudioService {
   Future<void> stopFilePlayback() async {
     if (currentlyPlayingFile == null) return;
     try {
-      await _filePlayer.stopPlayer();
+      await _filePlayer?.stopPlayer();
     } catch (_) {}
     currentlyPlayingFile = null;
     debugPrint('AudioService: File playback stopped');
@@ -223,9 +246,9 @@ class AudioService {
     stopRecording();
     stopPlayback();
     stopFilePlayback();
-    if (_playerOpened) _player.closePlayer();
-    if (_filePlayerOpened) _filePlayer.closePlayer();
-    _recorder.dispose();
+    if (_playerOpened) _player?.closePlayer();
+    if (_filePlayerOpened) _filePlayer?.closePlayer();
+    _recorder?.dispose();
     _audioController.close();
   }
 }

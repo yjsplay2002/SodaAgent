@@ -10,7 +10,12 @@ from soda_agent.sub_agents.navigation_agent import navigation_agent
 from soda_agent.sub_agents.weather_agent import weather_agent
 
 from soda_agent.tools.calendar_tools import get_upcoming_events, create_event, get_free_slots
-from soda_agent.tools.maps_tools import get_directions, get_eta, search_places
+from soda_agent.tools.maps_tools import (
+    get_directions,
+    get_eta,
+    get_eta_from_query,
+    search_places,
+)
 from soda_agent.tools.weather_tools import get_current_weather, get_forecast
 from soda_agent.tools.music_tools import play_song, pause_music, skip_track
 from soda_agent.tools.messaging_tools import read_messages, send_message
@@ -48,10 +53,14 @@ PERSONALITY:
 - Keep responses under 2 sentences unless the user asks for detail
 - Use natural spoken language, not written format
 - ALWAYS respond in the same language the user spoke. If they speak Korean, reply in Korean. If English, reply in English. Never repeat the same response in a different language.
+- Use the user's current location for weather when available; otherwise ask for the city before calling weather tools.
+- For weather, report temperatures in Celsius only.
+- For travel-time questions like "서울에서 부산까지 얼마나 걸려?" or "How long from Seoul to Busan?", call `get_eta_from_query` immediately instead of answering from memory.
+- If the user gives both origin and destination, do not ask a follow-up question before using a navigation tool.
 
 YOU HAVE THESE TOOLS - use them when the user asks about:
 - Calendar/scheduling: get_upcoming_events, create_event, get_free_slots
-- Navigation/directions: get_directions, get_eta, search_places
+- Navigation/directions: get_directions, get_eta, get_eta_from_query, search_places
 - Weather: get_current_weather, get_forecast
 - Music: play_song, pause_music, skip_track
 - Messages: read_messages, send_message
@@ -72,7 +81,7 @@ live_agent = Agent(
     instruction=LIVE_INSTRUCTION,
     tools=[
         get_upcoming_events, create_event, get_free_slots,
-        get_directions, get_eta, search_places,
+        get_directions, get_eta, get_eta_from_query, search_places,
         get_current_weather, get_forecast,
         play_song, pause_music, skip_track,
         read_messages, send_message,

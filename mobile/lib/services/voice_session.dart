@@ -4,11 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'audio_service.dart';
+import 'location_service.dart';
+import 'local_identity_service.dart';
 import 'websocket_service.dart';
 
 enum VoiceState { idle, listening, thinking, speaking }
 
-/// Sentinel for copyWith — distinguishes "not passed" from "explicitly null".
 const _noChange = Object();
 
 class VoiceSessionState {
@@ -18,6 +19,10 @@ class VoiceSessionState {
   final String? currentToolCall;
   final bool micAvailable;
   final String? playingAudioPath;
+  final String? conversationId;
+  final String? activeUserTurnId;
+  final String? activeAssistantTurnId;
+  final bool isAssistantDucked;
 
   const VoiceSessionState({
     this.voiceState = VoiceState.idle,
@@ -26,77 +31,128 @@ class VoiceSessionState {
     this.currentToolCall,
     this.micAvailable = false,
     this.playingAudioPath,
+    this.conversationId,
+    this.activeUserTurnId,
+    this.activeAssistantTurnId,
+    this.isAssistantDucked = false,
   });
 
   VoiceSessionState copyWith({
     VoiceState? voiceState,
     WsConnectionState? connectionState,
     List<TranscriptEntry>? transcripts,
-    String? currentToolCall,
+    Object? currentToolCall = _noChange,
     bool? micAvailable,
     Object? playingAudioPath = _noChange,
+    Object? conversationId = _noChange,
+    Object? activeUserTurnId = _noChange,
+    Object? activeAssistantTurnId = _noChange,
+    bool? isAssistantDucked,
   }) => VoiceSessionState(
     voiceState: voiceState ?? this.voiceState,
     connectionState: connectionState ?? this.connectionState,
     transcripts: transcripts ?? this.transcripts,
-    currentToolCall: currentToolCall,
+    currentToolCall: identical(currentToolCall, _noChange)
+        ? this.currentToolCall
+        : currentToolCall as String?,
     micAvailable: micAvailable ?? this.micAvailable,
     playingAudioPath: identical(playingAudioPath, _noChange)
         ? this.playingAudioPath
         : playingAudioPath as String?,
+    conversationId: identical(conversationId, _noChange)
+        ? this.conversationId
+        : conversationId as String?,
+    activeUserTurnId: identical(activeUserTurnId, _noChange)
+        ? this.activeUserTurnId
+        : activeUserTurnId as String?,
+    activeAssistantTurnId: identical(activeAssistantTurnId, _noChange)
+        ? this.activeAssistantTurnId
+        : activeAssistantTurnId as String?,
+    isAssistantDucked: isAssistantDucked ?? this.isAssistantDucked,
   );
 }
 
 class TranscriptEntry {
+  final String turnId;
   final String role;
   final String text;
   final DateTime timestamp;
   final String? audioPath;
+  final bool isFinal;
+  final bool isInterrupted;
 
   TranscriptEntry({
+    required this.turnId,
     required this.role,
     required this.text,
     DateTime? timestamp,
     this.audioPath,
+    this.isFinal = false,
+    this.isInterrupted = false,
   }) : timestamp = timestamp ?? DateTime.now();
 
-  TranscriptEntry withAudio(String path) => TranscriptEntry(
+  TranscriptEntry copyWith({
+    String? text,
+    Object? audioPath = _noChange,
+    bool? isFinal,
+    bool? isInterrupted,
+  }) => TranscriptEntry(
+    turnId: turnId,
     role: role,
-    text: text,
+    text: text ?? this.text,
     timestamp: timestamp,
-    audioPath: path,
+    audioPath: identical(audioPath, _noChange)
+        ? this.audioPath
+        : audioPath as String?,
+    isFinal: isFinal ?? this.isFinal,
+    isInterrupted: isInterrupted ?? this.isInterrupted,
   );
 }
 
 class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   final WebSocketService _ws;
-  final AudioService _audio;
+  final Ref _ref;
   StreamSubscription? _msgSub;
   StreamSubscription? _stateSub;
   StreamSubscription? _micSub;
 
-  /// PCM chunks accumulated during the current model response.
-  final List<Uint8List> _audioBuffer = [];
+  final Map<String, List<Uint8List>> _audioBuffers = {};
 
-  VoiceSessionNotifier(this._ws, this._audio)
-    : super(const VoiceSessionState()) {
+  VoiceSessionNotifier(this._ws, this._ref) : super(const VoiceSessionState()) {
     _stateSub = _ws.stateStream.listen((s) {
       state = state.copyWith(connectionState: s);
+      if (s == WsConnectionState.connected) {
+        unawaited(_sendLocationContext());
+      }
     });
 
     _msgSub = _ws.messages.listen(_handleMessage);
   }
 
-  // ---------- connection ----------
+  AudioService get _audio => _ref.read(audioServiceProvider);
 
-  void connect(String serverUrl, String userId) {
+  LocalIdentityService get _identity => _ref.read(localIdentityServiceProvider);
+  LocationService get _location => _ref.read(locationServiceProvider);
+
+  Future<void> connect(String serverUrl) async {
+    final userId = await _identity.getOrCreateUserId();
+    final conversationId =
+        state.conversationId ?? await _identity.getConversationId();
     final wsUrl = serverUrl
         .replaceFirst('https://', 'wss://')
         .replaceFirst('http://', 'ws://');
-    _ws.connect('$wsUrl/ws/mobile/$userId');
+    final uri = Uri.parse('$wsUrl/ws/mobile/$userId').replace(
+      queryParameters: {
+        if (conversationId != null && conversationId.isNotEmpty)
+          'conversation_id': conversationId,
+      },
+    );
+    _ws.connect(uri.toString());
+    state = state.copyWith(conversationId: conversationId);
   }
 
   void _startMicStream() async {
+    await _sendLocationContext();
     final started = await _audio.startRecording();
     if (started) {
       _micSub?.cancel();
@@ -126,18 +182,31 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   }
 
   void sendText(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+
+    unawaited(_sendTextTurn(trimmed));
+  }
+
+  Future<void> _sendTextTurn(String text) async {
+    await _sendLocationContext();
     _ws.sendText(text);
-    final transcripts = [
-      ...state.transcripts,
-      TranscriptEntry(role: 'user', text: text),
-    ];
     state = state.copyWith(
-      transcripts: transcripts,
       voiceState: VoiceState.thinking,
+      currentToolCall: null,
     );
   }
 
-  // ---------- audio file playback ----------
+  Future<void> _sendLocationContext() async {
+    final context = await _location.buildLocationContextPrompt();
+    if (context == null || context.isEmpty) {
+      return;
+    }
+
+    _ws.sendContextUpdate(context);
+  }
 
   void playAudio(String path) {
     _audio.stopFilePlayback();
@@ -157,108 +226,261 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     state = state.copyWith(playingAudioPath: null);
   }
 
-  // ---------- audio buffer → WAV file ----------
+  void _upsertTranscript({
+    required String turnId,
+    required String role,
+    required String text,
+    bool isFinal = false,
+    bool isInterrupted = false,
+  }) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
 
-  void _saveAudioBuffer() {
-    if (_audioBuffer.isEmpty) return;
-    final chunks = List<Uint8List>.from(_audioBuffer);
-    _audioBuffer.clear();
-    // Fire-and-forget — save runs in background
+    final transcripts = [...state.transcripts];
+    final index = transcripts.indexWhere((entry) => entry.turnId == turnId);
+    if (index >= 0) {
+      transcripts[index] = transcripts[index].copyWith(
+        text: trimmed,
+        isFinal: transcripts[index].isFinal || isFinal,
+        isInterrupted: transcripts[index].isInterrupted || isInterrupted,
+      );
+    } else {
+      transcripts.add(
+        TranscriptEntry(
+          turnId: turnId,
+          role: role,
+          text: trimmed,
+          isFinal: isFinal,
+          isInterrupted: isInterrupted,
+        ),
+      );
+    }
+
+    state = state.copyWith(transcripts: transcripts);
+  }
+
+  void _markTranscriptCancelled(String turnId, String? text) {
+    final transcripts = [...state.transcripts];
+    final index = transcripts.indexWhere((entry) => entry.turnId == turnId);
+    if (index >= 0) {
+      transcripts[index] = transcripts[index].copyWith(
+        text: (text != null && text.trim().isNotEmpty)
+            ? text.trim()
+            : transcripts[index].text,
+        isFinal: true,
+        isInterrupted: true,
+      );
+    } else {
+      transcripts.add(
+        TranscriptEntry(
+          turnId: turnId,
+          role: 'model',
+          text: text?.trim().isNotEmpty == true ? text!.trim() : 'Interrupted',
+          isFinal: true,
+          isInterrupted: true,
+        ),
+      );
+    }
+    state = state.copyWith(transcripts: transcripts);
+  }
+
+  void _saveAudioBufferForTurn(String turnId) {
+    final chunks = _audioBuffers.remove(turnId);
+    if (chunks == null || chunks.isEmpty) return;
+
     _audio.saveWavFile(chunks).then((path) {
       if (path == null) return;
-      // Associate with the last model transcript that has no audio yet
+
       final transcripts = [...state.transcripts];
-      bool linked = false;
-      for (int i = transcripts.length - 1; i >= 0; i--) {
-        if (transcripts[i].role == 'model' &&
-            transcripts[i].audioPath == null) {
-          transcripts[i] = transcripts[i].withAudio(path);
-          linked = true;
-          break;
-        }
+      final index = transcripts.indexWhere((entry) => entry.turnId == turnId);
+      if (index >= 0) {
+        transcripts[index] = transcripts[index].copyWith(audioPath: path);
+      } else {
+        transcripts.add(
+          TranscriptEntry(
+            turnId: turnId,
+            role: 'model',
+            text: '\u{1F50A}',
+            audioPath: path,
+            isFinal: true,
+          ),
+        );
       }
-      if (!linked) {
-        // No model transcript to link — create an audio-only entry
-        transcripts.add(TranscriptEntry(
-          role: 'model',
-          text: '\u{1F50A}',
-          audioPath: path,
-        ));
-      }
+
       state = state.copyWith(transcripts: transcripts);
     });
   }
 
-  // ---------- message handler ----------
-
   void _handleMessage(WsMessage msg) {
     switch (msg.type) {
-      case 'audio':
-        if (msg.audioData != null) {
-          // Stop file playback if active — live audio takes priority
-          if (state.playingAudioPath != null) {
-            _audio.stopFilePlayback();
-            state = state.copyWith(playingAudioPath: null);
-          }
-          // Accumulate for WAV save
-          _audioBuffer.add(msg.audioData!);
-          _audio.startPlayback().then((_) {
-            _audio.feedAudio(msg.audioData!);
-          });
-          state = state.copyWith(voiceState: VoiceState.speaking);
+      case 'session_ready':
+        state = state.copyWith(conversationId: msg.conversationId);
+        _identity.saveConversationId(msg.conversationId);
+
+      case 'turn_started':
+        if (msg.role == 'assistant' && msg.turnId != null) {
+          state = state.copyWith(
+            activeAssistantTurnId: msg.turnId,
+            voiceState: VoiceState.thinking,
+            currentToolCall: null,
+            isAssistantDucked: false,
+          );
+        } else if (msg.role == 'user' && msg.turnId != null) {
+          state = state.copyWith(activeUserTurnId: msg.turnId);
         }
 
-      case 'transcript':
-        if (msg.text == null || msg.text!.isEmpty) return;
-        final transcripts = [
-          ...state.transcripts,
-          TranscriptEntry(role: msg.role ?? 'model', text: msg.text!.trim()),
-        ];
+      case 'transcript_partial':
+        if (msg.turnId == null || msg.text == null) return;
+        _upsertTranscript(
+          turnId: msg.turnId!,
+          role: msg.role ?? 'model',
+          text: msg.text!,
+        );
         state = state.copyWith(
-          transcripts: transcripts,
+          activeUserTurnId: msg.role == 'user'
+              ? msg.turnId
+              : state.activeUserTurnId,
+          activeAssistantTurnId: msg.role == 'assistant' || msg.role == 'model'
+              ? msg.turnId
+              : state.activeAssistantTurnId,
+          voiceState: msg.role == 'user'
+              ? VoiceState.listening
+              : VoiceState.speaking,
+          isAssistantDucked: false,
+        );
+
+      case 'transcript_final':
+        if (msg.turnId == null || msg.text == null) return;
+        _upsertTranscript(
+          turnId: msg.turnId!,
+          role: msg.role ?? 'model',
+          text: msg.text!,
+          isFinal: true,
+        );
+        state = state.copyWith(
+          activeUserTurnId:
+              msg.role == 'user' && state.activeUserTurnId == msg.turnId
+              ? null
+              : state.activeUserTurnId,
+          activeAssistantTurnId:
+              (msg.role == 'assistant' || msg.role == 'model') &&
+                  state.activeAssistantTurnId == msg.turnId
+              ? null
+              : state.activeAssistantTurnId,
           voiceState: msg.role == 'user'
               ? VoiceState.thinking
               : VoiceState.speaking,
+          isAssistantDucked: false,
+        );
+
+      case 'audio':
+        final turnId = msg.turnId;
+        if (turnId == null || msg.audioData == null) return;
+        if (state.activeAssistantTurnId != null &&
+            state.activeAssistantTurnId != turnId) {
+          debugPrint('VoiceSession: Dropping stale audio for $turnId');
+          return;
+        }
+        if (state.playingAudioPath != null) {
+          _audio.stopFilePlayback();
+          state = state.copyWith(playingAudioPath: null);
+        }
+        _audioBuffers.putIfAbsent(turnId, () => []).add(msg.audioData!);
+        _audio.startPlayback().then((_) {
+          _audio.feedAudio(msg.audioData!);
+        });
+        state = state.copyWith(
+          activeAssistantTurnId: turnId,
+          voiceState: VoiceState.speaking,
+          isAssistantDucked: false,
         );
 
       case 'tool_call':
         debugPrint('VoiceSession: Tool call=${msg.toolName}');
-        state = state.copyWith(currentToolCall: msg.toolName);
-
-      case 'interrupted':
-        // Barge-in: save whatever audio we have, then flush player buffer.
-        debugPrint('VoiceSession: Barge-in — saving audio & flushing buffer');
-        _saveAudioBuffer();
-        _audio.stopPlayback();
         state = state.copyWith(
-          voiceState: VoiceState.listening,
-          currentToolCall: null,
+          currentToolCall: msg.toolName,
+          activeAssistantTurnId: msg.turnId ?? state.activeAssistantTurnId,
+          voiceState: VoiceState.thinking,
         );
 
-      case 'turn_complete':
-        // Save accumulated audio as WAV file.
-        // Don't stop player — let buffered audio play through naturally.
-        _saveAudioBuffer();
+      case 'tool_finished':
         state = state.copyWith(
+          currentToolCall: null,
+          activeAssistantTurnId: msg.turnId ?? state.activeAssistantTurnId,
+          voiceState: VoiceState.thinking,
+        );
+
+      case 'assistant_cancelled':
+        final turnId = msg.turnId;
+        if (turnId == null) return;
+        debugPrint('VoiceSession: Assistant turn cancelled=$turnId');
+        _markTranscriptCancelled(turnId, msg.text);
+        _saveAudioBufferForTurn(turnId);
+        _audio.stopPlayback();
+        state = state.copyWith(
+          activeAssistantTurnId: state.activeAssistantTurnId == turnId
+              ? null
+              : state.activeAssistantTurnId,
           voiceState: state.micAvailable
               ? VoiceState.listening
               : VoiceState.idle,
           currentToolCall: null,
+          isAssistantDucked: false,
         );
+
+      case 'assistant_duck':
+        _audio.duckPlayback();
+        state = state.copyWith(isAssistantDucked: true);
+
+      case 'assistant_resumed':
+        _audio.restorePlaybackVolume();
+        state = state.copyWith(isAssistantDucked: false);
+
+      case 'turn_committed':
+        final turnId = msg.turnId;
+        if (turnId == null) return;
+        if (msg.role == 'assistant') {
+          _saveAudioBufferForTurn(turnId);
+          _audio.restorePlaybackVolume();
+          state = state.copyWith(
+            activeAssistantTurnId: state.activeAssistantTurnId == turnId
+                ? null
+                : state.activeAssistantTurnId,
+            voiceState: state.micAvailable
+                ? VoiceState.listening
+                : VoiceState.idle,
+            currentToolCall: null,
+            isAssistantDucked: false,
+          );
+        } else if (msg.role == 'user') {
+          state = state.copyWith(
+            activeUserTurnId: state.activeUserTurnId == turnId
+                ? null
+                : state.activeUserTurnId,
+            voiceState: VoiceState.thinking,
+          );
+        }
 
       case 'error':
         debugPrint('VoiceSession: Error=${msg.error}');
-        _audioBuffer.clear();
+        _audioBuffers.clear();
         _audio.stopPlayback();
+        _audio.restorePlaybackVolume();
         final errorTranscripts = [
           ...state.transcripts,
-          TranscriptEntry(role: 'system', text: 'Error: ${msg.error}'),
+          TranscriptEntry(
+            turnId: 'system_${DateTime.now().millisecondsSinceEpoch}',
+            role: 'system',
+            text: 'Error: ${msg.error}',
+            isFinal: true,
+          ),
         ];
         state = state.copyWith(
           transcripts: errorTranscripts,
           voiceState: state.micAvailable
               ? VoiceState.listening
               : VoiceState.idle,
+          isAssistantDucked: false,
         );
 
       default:
@@ -267,15 +489,21 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   }
 
   void disconnect() {
-    _audioBuffer.clear();
+    _audioBuffers.clear();
     _micSub?.cancel();
     _audio.stopRecording();
+    _audio.stopPlayback();
+    _audio.restorePlaybackVolume();
     _audio.stopFilePlayback();
     _ws.disconnect();
     state = state.copyWith(
       voiceState: VoiceState.idle,
       connectionState: WsConnectionState.disconnected,
       playingAudioPath: null,
+      activeUserTurnId: null,
+      activeAssistantTurnId: null,
+      currentToolCall: null,
+      isAssistantDucked: false,
     );
   }
 
@@ -292,6 +520,9 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 final voiceSessionProvider =
     StateNotifierProvider<VoiceSessionNotifier, VoiceSessionState>((ref) {
       final ws = ref.read(webSocketServiceProvider);
-      final audio = ref.read(audioServiceProvider);
-      return VoiceSessionNotifier(ws, audio);
+      return VoiceSessionNotifier(ws, ref);
     });
+
+final localIdentityServiceProvider = Provider<LocalIdentityService>((ref) {
+  return LocalIdentityService();
+});

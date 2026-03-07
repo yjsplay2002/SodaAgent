@@ -2,8 +2,6 @@
 
 Free API, no key required.
 Documentation: https://open-meteo.com/en/docs
-
-Falls back to mock data on network errors.
 """
 
 import logging
@@ -57,6 +55,7 @@ def _geocode(city: str) -> tuple[float, float, str] | None:
             params={"name": city, "count": 1, "language": "en"},
             timeout=5,
         )
+        resp.raise_for_status()
         data = resp.json()
         if not data.get("results"):
             return None
@@ -72,18 +71,22 @@ def _geocode(city: str) -> tuple[float, float, str] | None:
 # ---------------------------------------------------------------------------
 
 
-def get_current_weather(city: str = "San Francisco") -> dict:
+def get_current_weather(city: str | None = None) -> dict:
     """Gets the current weather for a city.
 
     Args:
-        city: City name. Defaults to San Francisco.
+        city: City name.
 
     Returns:
         A dictionary with current weather conditions.
     """
+    city = _normalize_city(city)
+    if not city:
+        return _weather_city_required()
+
     geo = _geocode(city)
     if not geo:
-        return _mock_current_weather(city)
+        return _weather_unavailable(city)
 
     lat, lon, resolved_name = geo
 
@@ -97,11 +100,12 @@ def get_current_weather(city: str = "San Francisco") -> dict:
                     "temperature_2m,relative_humidity_2m,"
                     "weather_code,wind_speed_10m,wind_direction_10m"
                 ),
-                "temperature_unit": "fahrenheit",
+                "temperature_unit": "celsius",
                 "wind_speed_unit": "mph",
             },
             timeout=5,
         )
+        resp.raise_for_status()
         data = resp.json()
         current = data["current"]
 
@@ -113,15 +117,15 @@ def get_current_weather(city: str = "San Francisco") -> dict:
         return {
             "status": "success",
             "city": resolved_name,
-            "temperature": f"{temp}°F",
+            "temperature": f"{temp}°C",
             "condition": condition,
             "humidity": f"{humidity}%",
             "wind": f"{wind_speed} mph",
-            "summary": f"It's {temp}°F and {condition.lower()} in {resolved_name}.",
+            "summary": f"It's {temp}°C and {condition.lower()} in {resolved_name}.",
         }
     except Exception as e:
         logger.error("Weather API error: %s", e)
-        return _mock_current_weather(city)
+        return _weather_unavailable(city)
 
 
 # ---------------------------------------------------------------------------
@@ -129,19 +133,23 @@ def get_current_weather(city: str = "San Francisco") -> dict:
 # ---------------------------------------------------------------------------
 
 
-def get_forecast(city: str = "San Francisco", days: int = 3) -> dict:
+def get_forecast(city: str | None = None, days: int = 3) -> dict:
     """Gets the weather forecast for upcoming days.
 
     Args:
-        city: City name. Defaults to San Francisco.
+        city: City name.
         days: Number of days to forecast (1-7). Default is 3.
 
     Returns:
         A dictionary with the weather forecast.
     """
+    city = _normalize_city(city)
+    if not city:
+        return _weather_city_required()
+
     geo = _geocode(city)
     if not geo:
-        return _mock_forecast(city)
+        return _forecast_unavailable(city)
 
     lat, lon, resolved_name = geo
     days = min(max(days, 1), 7)
@@ -153,11 +161,12 @@ def get_forecast(city: str = "San Francisco", days: int = 3) -> dict:
                 "latitude": lat,
                 "longitude": lon,
                 "daily": "temperature_2m_max,temperature_2m_min,weather_code",
-                "temperature_unit": "fahrenheit",
+                "temperature_unit": "celsius",
                 "forecast_days": days,
             },
             timeout=5,
         )
+        resp.raise_for_status()
         data = resp.json()
         daily = data["daily"]
 
@@ -173,8 +182,8 @@ def get_forecast(city: str = "San Francisco", days: int = 3) -> dict:
 
             forecast.append({
                 "day": day_label,
-                "high": f"{round(daily['temperature_2m_max'][i])}°F",
-                "low": f"{round(daily['temperature_2m_min'][i])}°F",
+                "high": f"{round(daily['temperature_2m_max'][i])}°C",
+                "low": f"{round(daily['temperature_2m_min'][i])}°C",
                 "condition": _WMO_CODES.get(daily["weather_code"][i], "Unknown"),
             })
 
@@ -185,33 +194,43 @@ def get_forecast(city: str = "San Francisco", days: int = 3) -> dict:
         }
     except Exception as e:
         logger.error("Forecast API error: %s", e)
-        return _mock_forecast(city)
+        return _forecast_unavailable(city)
 
 
 # ---------------------------------------------------------------------------
-# Mock fallbacks (used on network errors)
+# Error fallbacks
 # ---------------------------------------------------------------------------
 
 
-def _mock_current_weather(city: str) -> dict:
+def _weather_unavailable(city: str) -> dict:
     return {
-        "status": "success",
+        "status": "error",
         "city": city,
-        "temperature": "72°F",
-        "condition": "Partly cloudy",
-        "humidity": "45%",
-        "wind": "8 mph",
-        "summary": f"It's 72°F and partly cloudy in {city}.",
+        "message": f"Unable to fetch live weather data for {city} right now.",
+        "summary": f"I couldn't fetch live weather data for {city} right now.",
     }
 
 
-def _mock_forecast(city: str) -> dict:
+def _weather_city_required() -> dict:
     return {
-        "status": "success",
-        "city": city,
-        "forecast": [
-            {"day": "Today", "high": "75°F", "low": "58°F", "condition": "Partly cloudy"},
-            {"day": "Tomorrow", "high": "70°F", "low": "55°F", "condition": "Sunny"},
-            {"day": "Day after", "high": "68°F", "low": "52°F", "condition": "Light rain"},
-        ],
+        "status": "error",
+        "message": "A city or current location is required to fetch accurate weather data.",
+        "summary": "I need a city or your current location to fetch accurate weather data.",
     }
+
+
+def _forecast_unavailable(city: str) -> dict:
+    return {
+        "status": "error",
+        "city": city,
+        "message": f"Unable to fetch live forecast data for {city} right now.",
+        "summary": f"I couldn't fetch the live forecast for {city} right now.",
+    }
+
+
+def _normalize_city(city: str | None) -> str | None:
+    if city is None:
+        return None
+
+    normalized = city.strip()
+    return normalized or None

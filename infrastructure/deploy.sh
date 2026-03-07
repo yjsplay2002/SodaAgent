@@ -45,7 +45,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --timeout 3600 \
     --session-affinity \
     --allow-unauthenticated \
-    --set-secrets "GOOGLE_API_KEY=google-api-key:latest" \
+    --set-secrets "GOOGLE_API_KEY=google-api-key:latest,GOOGLE_MAPS_API_KEY=google-maps-api-key:latest" \
     --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION"
 
 # 3. Get the service URL
@@ -61,9 +61,9 @@ echo "Service URL: $SERVICE_URL"
 echo "[4/4] Health check..."
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/health" || echo "000")
 if [ "$HTTP_STATUS" = "200" ]; then
-    echo "✅ Health check passed!"
+    echo "Health check passed."
 else
-    echo "⚠️  Health check returned: $HTTP_STATUS (service may still be starting)"
+    echo "Health check returned: $HTTP_STATUS. Service may still be starting."
 fi
 
 echo ""

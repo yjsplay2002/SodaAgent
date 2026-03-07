@@ -12,10 +12,10 @@ dependencies:
   cupertino_icons: ^1.0.8
   web_socket_channel: ^3.0.0
   flutter_riverpod: ^2.4.0
-  permission_handler: ^11.0.0
   record: ^6.2.0
-  flutter_sound: ^9.14.0
-  path_provider: ^2.1.0
+  geolocator: ^13.0.2
+  flutter_sound:
+    path: third_party/flutter_sound
   logger: ^2.0.0
 
 dev_dependencies:

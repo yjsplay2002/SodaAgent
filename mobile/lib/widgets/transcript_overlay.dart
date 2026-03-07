@@ -40,7 +40,7 @@ class _TranscriptOverlayState extends State<TranscriptOverlay> {
   @override
   void didUpdateWidget(TranscriptOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.transcripts.length != oldWidget.transcripts.length ||
+    if (widget.transcripts != oldWidget.transcripts ||
         widget.voiceState != oldWidget.voiceState) {
       _scrollToBottom();
     }
@@ -114,6 +114,8 @@ class _TranscriptBubble extends StatelessWidget {
     final isUser = entry.role == 'user';
     final isSystem = entry.role == 'system';
     final hasAudio = entry.audioPath != null;
+    final isInterrupted = entry.isInterrupted;
+    final isLive = !entry.isFinal;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
@@ -141,11 +143,28 @@ class _TranscriptBubble extends StatelessWidget {
                 style: TextStyle(
                   color: isSystem
                       ? Colors.red.shade300
+                      : isInterrupted
+                      ? Colors.orange.shade200
                       : Colors.white.withValues(alpha: 0.9),
                   fontSize: 14,
                   height: 1.4,
                 ),
               ),
+              if (isInterrupted || isLive) ...[
+                const SizedBox(height: 6),
+                Text(
+                  isInterrupted
+                      ? 'Interrupted'
+                      : isUser
+                      ? 'Listening...'
+                      : 'Speaking...',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.45),
+                    fontSize: 11,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
               if (hasAudio && !isUser && !isSystem) ...[
                 const SizedBox(height: 6),
                 _AudioPlayRow(

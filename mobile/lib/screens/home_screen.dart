@@ -7,8 +7,7 @@ import '../services/websocket_service.dart' show WsConnectionState;
 import '../widgets/transcript_overlay.dart';
 import '../widgets/voice_orb.dart';
 
-const _defaultServerUrl =
-    'https://soda-agent-526653124749.us-central1.run.app';
+const _defaultServerUrl = 'https://soda-agent-xn3v7zelza-uc.a.run.app';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -23,12 +22,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(voiceSessionProvider.notifier).connect(
-            _defaultServerUrl,
-            'user_${DateTime.now().millisecondsSinceEpoch}',
-          );
-    });
   }
 
   @override
@@ -114,7 +107,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               shape: BoxShape.circle,
               color: color,
               boxShadow: connected
-                  ? [BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 6)]
+                  ? [
+                      BoxShadow(
+                        color: color.withValues(alpha: 0.5),
+                        blurRadius: 6,
+                      ),
+                    ]
                   : null,
             ),
           ),
@@ -139,14 +137,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildStateLabel(VoiceSessionState session) {
     final label = switch (session.voiceState) {
-      VoiceState.idle => session.connectionState == WsConnectionState.connected
-          ? 'Tap mic to speak'
-          : 'Tap to connect',
+      VoiceState.idle =>
+        session.connectionState == WsConnectionState.connected
+            ? 'Tap mic to speak'
+            : 'Tap to connect',
       VoiceState.listening => 'Listening...',
-      VoiceState.thinking => session.currentToolCall != null
-          ? 'Using ${session.currentToolCall}...'
-          : 'Thinking...',
-      VoiceState.speaking => 'Speaking...',
+      VoiceState.thinking =>
+        session.currentToolCall != null
+            ? 'Using ${session.currentToolCall}...'
+            : 'Thinking...',
+      VoiceState.speaking =>
+        session.isAssistantDucked
+            ? 'Listening over assistant...'
+            : 'Speaking...',
     };
 
     return Text(
@@ -173,16 +176,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
                 hintText: canSend ? 'Type a message...' : 'Connecting...',
-                hintStyle:
-                    TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+                hintStyle: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.3),
+                ),
                 filled: true,
                 fillColor: Colors.white.withValues(alpha: 0.08),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24),
                   borderSide: BorderSide.none,
                 ),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
               ),
               onSubmitted: canSend ? _sendText : null,
             ),
@@ -206,10 +212,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final notifier = ref.read(voiceSessionProvider.notifier);
     if (session.connectionState == WsConnectionState.disconnected ||
         session.connectionState == WsConnectionState.error) {
-      notifier.connect(
-        _defaultServerUrl,
-        'user_${DateTime.now().millisecondsSinceEpoch}',
-      );
+      notifier.connect(_defaultServerUrl);
     } else if (session.connectionState == WsConnectionState.connected) {
       // Toggle mic on/off
       notifier.toggleMic();

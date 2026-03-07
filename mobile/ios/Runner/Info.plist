@@ -28,6 +28,15 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Soda needs microphone access to listen to your voice commands while driving.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Soda uses your current location to answer nearby, navigation, and weather requests more accurately.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Soda uses the local network to connect the Flutter debug service while developing on your iPhone.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_dartobservatory._tcp</string>
+		<string>_dartVmService._tcp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -40,11 +49,9 @@
 					<key>UISceneClassName</key>
 					<string>UIWindowScene</string>
 					<key>UISceneConfigurationName</key>
-					<string>flutter</string>
+					<string>Default Configuration</string>
 					<key>UISceneDelegateClassName</key>
-					<string>FlutterSceneDelegate</string>
-					<key>UISceneStoryboardFile</key>
-					<string>Main</string>
+					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
 				</dict>
 			</array>
 		</dict>
@@ -57,8 +64,6 @@
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
-	<key>UIMainStoryboardFile</key>
-	<string>Main</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

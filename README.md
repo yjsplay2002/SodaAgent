@@ -60,6 +60,7 @@ pip install -r requirements.txt
 # 2. Configure API key
 cp ../infrastructure/env/.env.example soda_agent/.env
 # Edit soda_agent/.env and set GOOGLE_API_KEY
+# Optional: set GOOGLE_MAPS_API_KEY if you want a dedicated Maps key
 
 # 3. Run with ADK Developer UI
 adk web soda_agent
@@ -74,6 +75,10 @@ uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 export GOOGLE_CLOUD_PROJECT=your-project-id
 ./infrastructure/deploy.sh
 ```
+
+`infrastructure/deploy.sh` already injects `GOOGLE_API_KEY` into Cloud Run from
+the Secret Manager secret `google-api-key`. If you want a separate Maps key,
+add a `GOOGLE_MAPS_API_KEY` env var or secret as well.
 
 ## Project Structure
 

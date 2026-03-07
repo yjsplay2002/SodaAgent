@@ -33,6 +33,26 @@ else:
     logger.warning("No Maps API key found — using mock data")
 
 
+_TRAVEL_TIME_KO_RE = re.compile(
+    r"^\s*(?P<origin>.+?)에서\s+(?P<destination>.+?)까지"
+)
+_TRAVEL_TIME_EN_RE = re.compile(
+    r"\bfrom\s+(?P<origin>.+?)\s+to\s+(?P<destination>.+?)(?:\s+(?:take|takes|is|would|will)\b|[?.!,]|$)",
+    re.IGNORECASE,
+)
+_DESTINATION_ONLY_KO_RE = re.compile(
+    r"^\s*(?P<destination>.+?)까지\s+(?:얼마나|몇)\s*(?:걸려|걸리|걸릴까)"
+)
+_DESTINATION_ONLY_EN_RE = re.compile(
+    r"\b(?:to|for)\s+(?P<destination>.+?)(?:\s+(?:how long|eta|travel time)\b|[?.!,]|$)",
+    re.IGNORECASE,
+)
+_TRAILING_QUERY_NOISE_RE = re.compile(
+    r"\s*(?:얼마나|몇)\s*(?:걸려|걸리|걸릴까).*$|\s*(?:how long|eta|travel time).*$",
+    re.IGNORECASE,
+)
+
+
 def _strip_html(text: str) -> str:
     """Remove HTML tags from a string."""
     return re.sub(r"<[^>]+>", "", text)
@@ -48,6 +68,37 @@ def _traffic_level(leg: dict) -> str:
     if ratio > 1.1:
         return "moderate"
     return "light"
+
+
+def _clean_place_text(text: str) -> str:
+    """Normalize a place fragment extracted from a natural-language query."""
+    cleaned = text.strip().strip("?.!,")
+    cleaned = _TRAILING_QUERY_NOISE_RE.sub("", cleaned).strip()
+    return cleaned.strip("?.!,")
+
+
+def _extract_route_from_query(query: str) -> tuple[str | None, str | None]:
+    """Best-effort extraction of origin/destination from a travel-time question."""
+    normalized = " ".join(query.strip().split())
+    if not normalized:
+        return None, None
+
+    for pattern in (_TRAVEL_TIME_KO_RE, _TRAVEL_TIME_EN_RE):
+        match = pattern.search(normalized)
+        if match:
+            origin = _clean_place_text(match.group("origin"))
+            destination = _clean_place_text(match.group("destination"))
+            if origin and destination:
+                return origin, destination
+
+    for pattern in (_DESTINATION_ONLY_KO_RE, _DESTINATION_ONLY_EN_RE):
+        match = pattern.search(normalized)
+        if match:
+            destination = _clean_place_text(match.group("destination"))
+            if destination:
+                return None, destination
+
+    return None, None
 
 
 def _call_directions(origin: str, destination: str, mode: str = "driving",
@@ -195,6 +246,33 @@ def get_eta(destination: str, origin: str = "current location") -> dict:
         return _mock_eta(destination)
 
 
+def get_eta_from_query(query: str, current_location: str = "current location") -> dict:
+    """Gets ETA from a natural-language travel-time question.
+
+    Examples:
+        - "서울에서 부산까지 얼마나 걸려?"
+        - "How long does it take from Seoul to Busan?"
+        - "부산까지 얼마나 걸려?"
+    """
+    origin, destination = _extract_route_from_query(query)
+    if not destination:
+        return {
+            "status": "error",
+            "message": (
+                "I need a destination to estimate travel time. "
+                "Try asking like '서울에서 부산까지 얼마나 걸려?'"
+            ),
+        }
+
+    resolved_origin = origin or current_location
+    result = get_eta(destination=destination, origin=resolved_origin)
+    if isinstance(result, dict):
+        result.setdefault("resolved_origin", resolved_origin)
+        result.setdefault("resolved_destination", destination)
+        result["query"] = query
+    return result
+
+
 # ---------------------------------------------------------------------------
 # search_places
 # ---------------------------------------------------------------------------
@@ -274,8 +352,10 @@ def _mock_eta(destination: str) -> dict:
     return {
         "status": "success",
         "destination": destination,
+        "origin": "current location",
         "eta": eta.strftime("%I:%M %p"),
         "duration": "25 minutes",
+        "distance": "12.3 miles",
         "traffic": "light",
     }
 
