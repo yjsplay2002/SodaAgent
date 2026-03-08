@@ -51,6 +51,17 @@ _TRAILING_QUERY_NOISE_RE = re.compile(
     r"\s*(?:얼마나|몇)\s*(?:걸려|걸리|걸릴까).*$|\s*(?:how long|eta|travel time).*$",
     re.IGNORECASE,
 )
+_COORDINATE_PAIR_RE = re.compile(
+    r"^\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lon>-?\d+(?:\.\d+)?)\s*$"
+)
+_COORDINATE_SENTENCE_RE = re.compile(
+    r"latitude\s*(?P<lat>-?\d+(?:\.\d+)?)\D+longitude\s*(?P<lon>-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_COORDINATE_LABEL_RE = re.compile(
+    r"coordinates?\s*[:=]\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lon>-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 
 
 def _strip_html(text: str) -> str:
@@ -75,6 +86,28 @@ def _clean_place_text(text: str) -> str:
     cleaned = text.strip().strip("?.!,")
     cleaned = _TRAILING_QUERY_NOISE_RE.sub("", cleaned).strip()
     return cleaned.strip("?.!,")
+
+
+def _normalize_place_input(value: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if not normalized:
+        return value
+
+    for pattern in (
+        _COORDINATE_PAIR_RE,
+        _COORDINATE_SENTENCE_RE,
+        _COORDINATE_LABEL_RE,
+    ):
+        match = pattern.search(normalized)
+        if not match:
+            continue
+
+        lat = float(match.group("lat"))
+        lon = float(match.group("lon"))
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return f"{lat:.5f},{lon:.5f}"
+
+    return normalized
 
 
 def _extract_route_from_query(query: str) -> tuple[str | None, str | None]:
@@ -160,6 +193,9 @@ def get_directions(destination: str, origin: str = "current location") -> dict:
     Returns:
         A dictionary with route information including distance and ETA.
     """
+    destination = _normalize_place_input(destination)
+    origin = _normalize_place_input(origin)
+
     if not _MAPS_API_KEY:
         return _mock_directions(destination)
 
@@ -209,6 +245,9 @@ def get_eta(destination: str, origin: str = "current location") -> dict:
     Returns:
         A dictionary with ETA information.
     """
+    destination = _normalize_place_input(destination)
+    origin = _normalize_place_input(origin)
+
     if not _MAPS_API_KEY:
         return _mock_eta(destination)
 
@@ -264,11 +303,12 @@ def get_eta_from_query(query: str, current_location: str = "current location") -
             ),
         }
 
-    resolved_origin = origin or current_location
-    result = get_eta(destination=destination, origin=resolved_origin)
+    resolved_origin = _normalize_place_input(origin or current_location)
+    resolved_destination = _normalize_place_input(destination)
+    result = get_eta(destination=resolved_destination, origin=resolved_origin)
     if isinstance(result, dict):
         result.setdefault("resolved_origin", resolved_origin)
-        result.setdefault("resolved_destination", destination)
+        result.setdefault("resolved_destination", resolved_destination)
         result["query"] = query
     return result
 

@@ -5,6 +5,7 @@ Documentation: https://open-meteo.com/en/docs
 """
 
 import logging
+import re
 from datetime import datetime
 
 import httpx
@@ -13,6 +14,17 @@ logger = logging.getLogger(__name__)
 
 _GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+_COORDINATE_PAIR_RE = re.compile(
+    r"^\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lon>-?\d+(?:\.\d+)?)\s*$"
+)
+_COORDINATE_SENTENCE_RE = re.compile(
+    r"latitude\s*(?P<lat>-?\d+(?:\.\d+)?)\D+longitude\s*(?P<lon>-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_COORDINATE_LABEL_RE = re.compile(
+    r"coordinates?\s*[:=]\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lon>-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 
 # WMO Weather interpretation codes → human-readable descriptions
 _WMO_CODES: dict[int, str] = {
@@ -66,13 +78,39 @@ def _geocode(city: str) -> tuple[float, float, str] | None:
         return None
 
 
+def _extract_coordinates(location: str) -> tuple[float, float] | None:
+    normalized = " ".join(location.split())
+    for pattern in (
+        _COORDINATE_PAIR_RE,
+        _COORDINATE_SENTENCE_RE,
+        _COORDINATE_LABEL_RE,
+    ):
+        match = pattern.search(normalized)
+        if not match:
+            continue
+        lat = float(match.group("lat"))
+        lon = float(match.group("lon"))
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return lat, lon
+    return None
+
+
+def _resolve_location(location: str) -> tuple[float, float, str] | None:
+    coordinates = _extract_coordinates(location)
+    if coordinates:
+        lat, lon = coordinates
+        return lat, lon, "your current location"
+
+    return _geocode(location)
+
+
 # ---------------------------------------------------------------------------
 # get_current_weather
 # ---------------------------------------------------------------------------
 
 
 def get_current_weather(city: str | None = None) -> dict:
-    """Gets the current weather for a city.
+    """Gets the current weather for a city or coordinates.
 
     Args:
         city: City name.
@@ -84,7 +122,7 @@ def get_current_weather(city: str | None = None) -> dict:
     if not city:
         return _weather_city_required()
 
-    geo = _geocode(city)
+    geo = _resolve_location(city)
     if not geo:
         return _weather_unavailable(city)
 
@@ -114,6 +152,12 @@ def get_current_weather(city: str | None = None) -> dict:
         humidity = current["relative_humidity_2m"]
         wind_speed = round(current["wind_speed_10m"])
 
+        summary_location = (
+            "near your current location"
+            if resolved_name == "your current location"
+            else f"in {resolved_name}"
+        )
+
         return {
             "status": "success",
             "city": resolved_name,
@@ -121,7 +165,7 @@ def get_current_weather(city: str | None = None) -> dict:
             "condition": condition,
             "humidity": f"{humidity}%",
             "wind": f"{wind_speed} mph",
-            "summary": f"It's {temp}°C and {condition.lower()} in {resolved_name}.",
+            "summary": f"It's {temp}°C and {condition.lower()} {summary_location}.",
         }
     except Exception as e:
         logger.error("Weather API error: %s", e)
@@ -147,7 +191,7 @@ def get_forecast(city: str | None = None, days: int = 3) -> dict:
     if not city:
         return _weather_city_required()
 
-    geo = _geocode(city)
+    geo = _resolve_location(city)
     if not geo:
         return _forecast_unavailable(city)
 

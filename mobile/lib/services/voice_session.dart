@@ -200,8 +200,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   }
 
   Future<void> _sendLocationContext() async {
-    final context = await _location.buildLocationContextPrompt();
-    if (context == null || context.isEmpty) {
+    final context = await _location.buildLocationContextPayload();
+    if (context == null) {
       return;
     }
 

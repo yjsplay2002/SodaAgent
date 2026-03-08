@@ -177,7 +177,7 @@ class WebSocketService {
     _channel?.sink.add(jsonEncode({'type': 'text_turn', 'text': text}));
   }
 
-  void sendContextUpdate(String context) {
+  void sendContextUpdate(Object context) {
     if (_state != WsConnectionState.connected) {
       debugPrint('WS: Cannot send context, not connected (state=$_state)');
       return;

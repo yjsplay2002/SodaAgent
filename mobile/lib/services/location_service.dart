@@ -9,20 +9,19 @@ class LocationService {
   Position? _cachedPosition;
   DateTime? _cachedAt;
 
-  Future<String?> buildLocationContextPrompt() async {
+  Future<Map<String, dynamic>?> buildLocationContextPayload() async {
     final position = await _getCurrentPosition();
     if (position == null) {
       return null;
     }
 
-    final latitude = position.latitude.toStringAsFixed(5);
-    final longitude = position.longitude.toStringAsFixed(5);
-
-    return [
-      '[Client location context]',
-      'The user is currently near latitude $latitude and longitude $longitude.',
-      'Use this current location for location-dependent requests unless the user specifies a different place.',
-    ].join(' ');
+    return {
+      'type': 'device_location',
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'accuracy_meters': position.accuracy,
+      'captured_at': position.timestamp?.toIso8601String(),
+    };
   }
 
   Future<Position?> _getCurrentPosition() async {

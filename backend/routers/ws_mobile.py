@@ -6,6 +6,8 @@ import asyncio
 import base64
 import json
 import logging
+import re
+from dataclasses import dataclass
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -39,6 +41,14 @@ router = APIRouter(tags=["mobile"])
 
 APP_NAME = "soda_live_agent"
 
+_COORDINATE_PAIR_RE = re.compile(
+    r"^\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lon>-?\d+(?:\.\d+)?)\s*$"
+)
+_COORDINATE_SENTENCE_RE = re.compile(
+    r"latitude\s*(?P<lat>-?\d+(?:\.\d+)?)\D+longitude\s*(?P<lon>-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
 runner = Runner(
     agent=live_agent,
     app_name=APP_NAME,
@@ -62,6 +72,27 @@ _TOOL_MAP = {
     "send_message": send_message,
     "get_vehicle_status": get_vehicle_status,
 }
+
+
+@dataclass(frozen=True)
+class ClientLocationContext:
+    latitude: float
+    longitude: float
+
+    @property
+    def coordinate_text(self) -> str:
+        return f"{self.latitude:.5f},{self.longitude:.5f}"
+
+    def to_model_text(self) -> str:
+        return (
+            "[Context only. Do not answer or paraphrase this metadata.] "
+            f"Device location coordinates: {self.coordinate_text}. "
+            "Use these coordinates only when the user asks something "
+            "location-dependent and does not name a place. "
+            "For weather tools, pass them as the city argument. "
+            "For navigation tools, pass them as the origin or current_location "
+            "argument. Do not mention the coordinates unless the user asks."
+        )
 
 
 def _execute_tool(name: str, args: dict):
@@ -233,7 +264,31 @@ def _summarize_directions_result(result: dict) -> str | None:
     return None
 
 
-def _normalize_client_context(raw_context: object) -> str | None:
+def _parse_coordinate_pair(
+    latitude: object,
+    longitude: object,
+) -> ClientLocationContext | None:
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+    except (TypeError, ValueError):
+        return None
+
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+
+    return ClientLocationContext(latitude=lat, longitude=lon)
+
+
+def _normalize_client_context(
+    raw_context: object,
+) -> ClientLocationContext | None:
+    if isinstance(raw_context, dict):
+        return _parse_coordinate_pair(
+            raw_context.get("latitude"),
+            raw_context.get("longitude"),
+        )
+
     if not isinstance(raw_context, str):
         return None
 
@@ -241,16 +296,27 @@ def _normalize_client_context(raw_context: object) -> str | None:
     if not normalized:
         return None
 
-    return normalized[:500]
+    for pattern in (_COORDINATE_PAIR_RE, _COORDINATE_SENTENCE_RE):
+        match = pattern.search(normalized)
+        if match:
+            return _parse_coordinate_pair(
+                match.group("lat"),
+                match.group("lon"),
+            )
+
+    return None
 
 
-def _merge_text_with_context(text: str, client_context: str | None) -> str:
+def _merge_text_with_context(
+    text: str,
+    client_context: ClientLocationContext | None,
+) -> str:
     if not client_context:
         return text
 
     return (
-        f"{client_context}\n\n"
-        "User request follows. Use the client location context when it is relevant.\n"
+        f"{client_context.to_model_text()}\n\n"
+        "User request follows.\n"
         f"{text}"
     )
 
@@ -334,7 +400,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
     new_user_turn = asyncio.Event()
     duck_timer_task: asyncio.Task | None = None
     ducked_assistant_turn_id: str | None = None
-    client_context: str | None = None
+    client_context: ClientLocationContext | None = None
     audio_context_sent = False
 
     async def send_client(payload: dict) -> None:
@@ -720,7 +786,11 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             LiveRequest(
                                 content=types.Content(
                                     role="user",
-                                    parts=[types.Part(text=client_context)],
+                                    parts=[
+                                        types.Part(
+                                            text=client_context.to_model_text()
+                                        )
+                                    ],
                                 )
                             )
                         )
