@@ -25,6 +25,7 @@ class AudioService {
   bool _filePlayerOpened = false;
   String? currentlyPlayingFile;
   double _liveVolume = 1.0;
+  Completer<void>? _playbackStartCompleter;
 
   Stream<Uint8List> get audioStream => _audioController.stream;
   bool get isRecording => _isRecording;
@@ -55,9 +56,9 @@ class AudioService {
           encoder: AudioEncoder.pcm16bits,
           sampleRate: 16000,
           numChannels: 1,
-          autoGain: true,
-          echoCancel: true,
-          noiseSuppress: true,
+          autoGain: false,
+          echoCancel: false,
+          noiseSuppress: false,
         ),
       );
       _recorderSub = stream.listen((data) {
@@ -94,17 +95,32 @@ class AudioService {
 
   Future<void> startPlayback({int sampleRate = 24000}) async {
     if (_isPlaying) return;
-    await _ensurePlayerOpen();
-    await _livePlayer.startPlayerFromStream(
-      codec: Codec.pcm16,
-      interleaved: false,
-      numChannels: 1,
-      sampleRate: sampleRate,
-      bufferSize: 8192,
-    );
-    await _livePlayer.setVolume(_liveVolume);
-    _isPlaying = true;
-    debugPrint('AudioService: Playback started at ${sampleRate}Hz');
+    // Serialize concurrent calls so startPlayerFromStream is never called twice.
+    if (_playbackStartCompleter != null) {
+      await _playbackStartCompleter!.future;
+      return;
+    }
+    _playbackStartCompleter = Completer<void>();
+    try {
+      await _ensurePlayerOpen();
+      await _livePlayer.startPlayerFromStream(
+        codec: Codec.pcm16,
+        interleaved: false,
+        numChannels: 1,
+        sampleRate: sampleRate,
+        bufferSize: 8192,
+      );
+      await _livePlayer.setVolume(_liveVolume);
+      _isPlaying = true;
+      debugPrint('AudioService: Playback started at ${sampleRate}Hz');
+      _playbackStartCompleter!.complete();
+    } catch (e) {
+      _playbackStartCompleter!.completeError(e);
+      _isPlaying = false;
+      rethrow;
+    } finally {
+      _playbackStartCompleter = null;
+    }
   }
 
   void feedAudio(Uint8List pcmData) {
