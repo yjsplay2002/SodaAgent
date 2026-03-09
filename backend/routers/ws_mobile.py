@@ -86,10 +86,11 @@ class ClientLocationContext:
     def to_model_text(self) -> str:
         return (
             "[Context only. Do not answer or paraphrase this metadata.] "
-            f"Device location coordinates: {self.coordinate_text}. "
+            f"Device location: latitude={self.latitude:.5f}, longitude={self.longitude:.5f}. "
             "Use these coordinates only when the user asks something "
             "location-dependent and does not name a place. "
-            "For weather tools, pass them as the city argument. "
+            "For weather tools (get_current_weather, get_forecast), pass "
+            f"latitude={self.latitude:.5f} and longitude={self.longitude:.5f} as arguments. "
             "For navigation tools, pass them as the origin or current_location "
             "argument. Do not mention the coordinates unless the user asks."
         )
@@ -402,6 +403,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
     ducked_assistant_turn_id: str | None = None
     client_context: ClientLocationContext | None = None
     audio_context_sent = False
+    finalize_timer: asyncio.Task | None = None
+    assistant_has_audio: bool = False
 
     async def send_client(payload: dict) -> None:
         payload.setdefault("conversation_id", turn_controller.conversation_id)
@@ -447,15 +450,18 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         return turn_id
 
     async def cancel_assistant_turn(reason: str) -> None:
-        nonlocal duck_timer_task, ducked_assistant_turn_id
+        nonlocal duck_timer_task, ducked_assistant_turn_id, finalize_timer, assistant_has_audio
+        if finalize_timer:
+            finalize_timer.cancel()
+            finalize_timer = None
         if duck_timer_task:
             duck_timer_task.cancel()
             duck_timer_task = None
         ducked_assistant_turn_id = None
+        assistant_has_audio = False
         snapshot = turn_controller.cancel_assistant_turn()
         if not snapshot:
             return
-
         await send_client(
             {
                 "type": "assistant_cancelled",
@@ -475,16 +481,18 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         )
 
     async def finalize_assistant_turn(status: str = "completed") -> None:
-        nonlocal duck_timer_task, ducked_assistant_turn_id
+        nonlocal duck_timer_task, ducked_assistant_turn_id, finalize_timer, assistant_has_audio
+        if finalize_timer:
+            finalize_timer.cancel()
+            finalize_timer = None
         if duck_timer_task:
             duck_timer_task.cancel()
             duck_timer_task = None
         ducked_assistant_turn_id = None
+        assistant_has_audio = False
         snapshot = turn_controller.complete_assistant_turn()
         if not snapshot:
             return
-
-        if snapshot.text:
             await send_client(
                 {
                     "type": "transcript_final",
@@ -501,6 +509,28 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                 "status": status,
             }
         )
+
+    def _cancel_finalize_timer() -> None:
+        nonlocal finalize_timer
+        if finalize_timer and not finalize_timer.done():
+            finalize_timer.cancel()
+            finalize_timer = None
+
+    def _schedule_finalize() -> None:
+        nonlocal finalize_timer
+        _cancel_finalize_timer()
+
+        async def _delayed_finalize():
+            nonlocal finalize_timer
+            try:
+                await asyncio.sleep(0.8)
+                await finalize_assistant_turn()
+            except asyncio.CancelledError:
+                pass
+            finally:
+                finalize_timer = None
+
+        finalize_timer = asyncio.create_task(_delayed_finalize())
 
     async def send_assistant_duck(reason: str) -> None:
         nonlocal duck_timer_task, ducked_assistant_turn_id
@@ -577,6 +607,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
 
                 if new_user_turn.is_set():
                     new_user_turn.clear()
+                    _cancel_finalize_timer()
                     pending_tool_name = None
                     pending_tool_args = {}
                     got_audio_after_tool = False
@@ -642,6 +673,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 logger.debug("Dropping blocked tool call")
                                 continue
 
+                            _cancel_finalize_timer()
                             turn_id = await ensure_assistant_turn_started()
                             pending_tool_name = part.function_call.name
                             pending_tool_args = (
@@ -671,6 +703,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 logger.debug("Dropping blocked assistant audio")
                                 continue
 
+                            _cancel_finalize_timer()
+                            assistant_has_audio = True
                             turn_id = await ensure_assistant_turn_started()
                             await send_client(
                                 {
@@ -723,7 +757,17 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             "FALLBACK: No audio after tool %s. Completing turn server-side.",
                             pending_tool_name,
                         )
-                        result = _execute_tool(pending_tool_name, pending_tool_args)
+                        # Inject client location into weather tool args if missing
+                        fallback_args = dict(pending_tool_args)
+                        if (
+                            pending_tool_name in {"get_current_weather", "get_forecast"}
+                            and not fallback_args.get("city")
+                            and fallback_args.get("latitude") is None
+                            and client_context
+                        ):
+                            fallback_args["latitude"] = client_context.latitude
+                            fallback_args["longitude"] = client_context.longitude
+                        result = _execute_tool(pending_tool_name, fallback_args)
                         if result:
                             turn_id = await ensure_assistant_turn_started()
                             summary = _tool_result_summary(
@@ -756,15 +800,21 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                         pending_tool_args = {}
                         got_audio_after_tool = False
                         turn_complete_count = 0
-
-                has_transcription = bool(input_texts) or bool(output_texts)
                 if (
                     event.is_final_response()
                     and not has_transcription
                     and not sent_visible_part
                     and not _has_visible_parts(event)
                 ):
-                    await finalize_assistant_turn()
+                    if (
+                        assistant_has_audio
+                        and turn_controller.current_assistant_turn_id
+                    ):
+                        # Audio was sent in this turn -- debounce finalization
+                        # to avoid splitting a single response into multiple turns
+                        _schedule_finalize()
+                    else:
+                        await finalize_assistant_turn()
 
         except Exception as exc:
             logger.exception("Agent event error: %s", exc)
@@ -887,6 +937,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             if task.exception():
                 logger.error("Task error: %s", task.exception())
     finally:
+        if finalize_timer:
+            finalize_timer.cancel()
         if duck_timer_task:
             duck_timer_task.cancel()
         live_queue.close()
