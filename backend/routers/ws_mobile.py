@@ -493,14 +493,14 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         snapshot = turn_controller.complete_assistant_turn()
         if not snapshot:
             return
-            await send_client(
-                {
-                    "type": "transcript_final",
-                    "turn_id": snapshot.turn_id,
-                    "role": snapshot.role,
-                    "text": snapshot.text,
-                }
-            )
+        await send_client(
+            {
+                "type": "transcript_final",
+                "turn_id": snapshot.turn_id,
+                "role": snapshot.role,
+                "text": snapshot.text,
+            }
+        )
         await send_client(
             {
                 "type": "turn_committed",
@@ -596,6 +596,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         got_audio_after_tool = False
         turn_complete_count = 0
         already_nudged = False
+        nonlocal assistant_has_audio
 
         try:
             async for event in runner.run_live(
@@ -663,6 +664,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                         }
                     )
 
+                has_transcription = bool(output_texts)
                 sent_audio = False
                 sent_visible_part = False
 
