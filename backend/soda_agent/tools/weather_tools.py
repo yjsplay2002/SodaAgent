@@ -109,24 +109,34 @@ def _resolve_location(location: str) -> tuple[float, float, str] | None:
 # ---------------------------------------------------------------------------
 
 
-def get_current_weather(city: str | None = None) -> dict:
+def get_current_weather(
+    city: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> dict:
     """Gets the current weather for a city or coordinates.
-
     Args:
-        city: City name.
-
+        city: City name or coordinates as "lat,lon".
+        latitude: Latitude of the user's current location. Use with longitude.
+        longitude: Longitude of the user's current location. Use with latitude.
     Returns:
         A dictionary with current weather conditions.
     """
-    city = _normalize_city(city)
-    if not city:
-        return _weather_city_required()
+    # Prefer explicit lat/lon coordinates when provided
+    if latitude is not None and longitude is not None:
+        if -90 <= latitude <= 90 and -180 <= longitude <= 180:
+            lat, lon, resolved_name = latitude, longitude, "your current location"
+        else:
+            return _weather_unavailable("invalid coordinates")
+    else:
+        city = _normalize_city(city)
+        if not city:
+            return _weather_city_required()
 
-    geo = _resolve_location(city)
-    if not geo:
-        return _weather_unavailable(city)
-
-    lat, lon, resolved_name = geo
+        geo = _resolve_location(city)
+        if not geo:
+            return _weather_unavailable(city)
+        lat, lon, resolved_name = geo
 
     try:
         resp = httpx.get(
@@ -146,30 +156,27 @@ def get_current_weather(city: str | None = None) -> dict:
         resp.raise_for_status()
         data = resp.json()
         current = data["current"]
-
         condition = _WMO_CODES.get(current["weather_code"], "Unknown")
         temp = round(current["temperature_2m"])
         humidity = current["relative_humidity_2m"]
         wind_speed = round(current["wind_speed_10m"])
-
         summary_location = (
             "near your current location"
             if resolved_name == "your current location"
             else f"in {resolved_name}"
         )
-
         return {
             "status": "success",
             "city": resolved_name,
-            "temperature": f"{temp}°C",
+            "temperature": f"{temp}\u00b0C",
             "condition": condition,
             "humidity": f"{humidity}%",
             "wind": f"{wind_speed} mph",
-            "summary": f"It's {temp}°C and {condition.lower()} {summary_location}.",
+            "summary": f"It's {temp}\u00b0C and {condition.lower()} {summary_location}.",
         }
     except Exception as e:
         logger.error("Weather API error: %s", e)
-        return _weather_unavailable(city)
+        return _weather_unavailable(city or "current location")
 
 
 # ---------------------------------------------------------------------------
@@ -177,25 +184,37 @@ def get_current_weather(city: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def get_forecast(city: str | None = None, days: int = 3) -> dict:
+def get_forecast(
+    city: str | None = None,
+    days: int = 3,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> dict:
     """Gets the weather forecast for upcoming days.
-
     Args:
-        city: City name.
+        city: City name or coordinates as "lat,lon".
         days: Number of days to forecast (1-7). Default is 3.
-
+        latitude: Latitude of the user's current location. Use with longitude.
+        longitude: Longitude of the user's current location. Use with latitude.
     Returns:
         A dictionary with the weather forecast.
     """
-    city = _normalize_city(city)
-    if not city:
-        return _weather_city_required()
+    # Prefer explicit lat/lon coordinates when provided
+    if latitude is not None and longitude is not None:
+        if -90 <= latitude <= 90 and -180 <= longitude <= 180:
+            lat, lon, resolved_name = latitude, longitude, "your current location"
+        else:
+            return _forecast_unavailable("invalid coordinates")
+    else:
+        city = _normalize_city(city)
+        if not city:
+            return _weather_city_required()
 
-    geo = _resolve_location(city)
-    if not geo:
-        return _forecast_unavailable(city)
+        geo = _resolve_location(city)
+        if not geo:
+            return _forecast_unavailable(city)
+        lat, lon, resolved_name = geo
 
-    lat, lon, resolved_name = geo
     days = min(max(days, 1), 7)
 
     try:
@@ -213,7 +232,6 @@ def get_forecast(city: str | None = None, days: int = 3) -> dict:
         resp.raise_for_status()
         data = resp.json()
         daily = data["daily"]
-
         forecast = []
         for i in range(len(daily["time"])):
             date = datetime.strptime(daily["time"][i], "%Y-%m-%d")
@@ -223,14 +241,12 @@ def get_forecast(city: str | None = None, days: int = 3) -> dict:
                 day_label = "Tomorrow"
             else:
                 day_label = date.strftime("%A")
-
             forecast.append({
                 "day": day_label,
-                "high": f"{round(daily['temperature_2m_max'][i])}°C",
-                "low": f"{round(daily['temperature_2m_min'][i])}°C",
+                "high": f"{round(daily['temperature_2m_max'][i])}\u00b0C",
+                "low": f"{round(daily['temperature_2m_min'][i])}\u00b0C",
                 "condition": _WMO_CODES.get(daily["weather_code"][i], "Unknown"),
             })
-
         return {
             "status": "success",
             "city": resolved_name,
@@ -238,7 +254,7 @@ def get_forecast(city: str | None = None, days: int = 3) -> dict:
         }
     except Exception as e:
         logger.error("Forecast API error: %s", e)
-        return _forecast_unavailable(city)
+        return _forecast_unavailable(city or "current location")
 
 
 # ---------------------------------------------------------------------------
