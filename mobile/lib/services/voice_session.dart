@@ -13,40 +13,6 @@ enum VoiceState { idle, listening, thinking, speaking }
 
 const _noChange = Object();
 
-class VadConfig {
-  final double speechRmsThreshold;
-  final double endSilenceMs;
-  final double minSpeechMs;
-
-  const VadConfig({
-    required this.speechRmsThreshold,
-    required this.endSilenceMs,
-    required this.minSpeechMs,
-  });
-
-  static const defaults = VadConfig(
-    speechRmsThreshold: 250,
-    endSilenceMs: 650,
-    minSpeechMs: 180,
-  );
-
-  VadConfig copyWith({
-    double? speechRmsThreshold,
-    double? endSilenceMs,
-    double? minSpeechMs,
-  }) => VadConfig(
-    speechRmsThreshold: speechRmsThreshold ?? this.speechRmsThreshold,
-    endSilenceMs: endSilenceMs ?? this.endSilenceMs,
-    minSpeechMs: minSpeechMs ?? this.minSpeechMs,
-  );
-
-  Map<String, Object> toWsPayload() => {
-    'speech_rms_threshold': speechRmsThreshold,
-    'end_silence_ms': endSilenceMs,
-    'min_speech_ms': minSpeechMs,
-  };
-}
-
 class VoiceSessionState {
   final VoiceState voiceState;
   final WsConnectionState connectionState;
@@ -59,7 +25,6 @@ class VoiceSessionState {
   final String? activeUserTurnId;
   final String? activeAssistantTurnId;
   final bool isAssistantDucked;
-  final VadConfig vadConfig;
 
   const VoiceSessionState({
     this.voiceState = VoiceState.idle,
@@ -73,7 +38,6 @@ class VoiceSessionState {
     this.activeUserTurnId,
     this.activeAssistantTurnId,
     this.isAssistantDucked = false,
-    this.vadConfig = VadConfig.defaults,
   });
 
   VoiceSessionState copyWith({
@@ -88,7 +52,6 @@ class VoiceSessionState {
     Object? activeUserTurnId = _noChange,
     Object? activeAssistantTurnId = _noChange,
     bool? isAssistantDucked,
-    VadConfig? vadConfig,
   }) => VoiceSessionState(
     voiceState: voiceState ?? this.voiceState,
     connectionState: connectionState ?? this.connectionState,
@@ -111,7 +74,6 @@ class VoiceSessionState {
         ? this.activeAssistantTurnId
         : activeAssistantTurnId as String?,
     isAssistantDucked: isAssistantDucked ?? this.isAssistantDucked,
-    vadConfig: vadConfig ?? this.vadConfig,
   );
 }
 
@@ -171,7 +133,6 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     _stateSub = _ws.stateStream.listen((s) {
       state = state.copyWith(connectionState: s);
       if (s == WsConnectionState.connected) {
-        _sendVadConfig(state.vadConfig);
         unawaited(_sendLocationContext());
       }
     });
@@ -263,22 +224,12 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 
   Future<void> _sendTextTurn(String text) async {
     await _sendLocationContext();
-    _sendVadConfig(state.vadConfig);
     _ws.sendText(text);
     state = state.copyWith(
       voiceState: VoiceState.thinking,
       currentToolCall: null,
       isUserSpeechDetected: false,
     );
-  }
-
-  void updateVadConfig(VadConfig config) {
-    state = state.copyWith(vadConfig: config);
-    _sendVadConfig(config);
-  }
-
-  void resetVadConfig() {
-    updateVadConfig(VadConfig.defaults);
   }
 
   Future<void> _sendLocationContext() async {
@@ -288,16 +239,6 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     }
 
     _ws.sendContextUpdate(context);
-  }
-
-  void _sendVadConfig(VadConfig config) {
-    _ws.sendVadConfig(config.toWsPayload());
-    debugPrint(
-      'VoiceSession: Sent VAD config '
-      'threshold=${config.speechRmsThreshold.toStringAsFixed(0)} '
-      'silence=${config.endSilenceMs.toStringAsFixed(0)}ms '
-      'minSpeech=${config.minSpeechMs.toStringAsFixed(0)}ms',
-    );
   }
 
   void playAudio(String path) {

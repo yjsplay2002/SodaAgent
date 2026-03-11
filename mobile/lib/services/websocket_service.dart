@@ -195,17 +195,6 @@ class WebSocketService {
     );
   }
 
-  void sendVadConfig(Map<String, Object?> config) {
-    if (_state != WsConnectionState.connected) {
-      debugPrint('WS: Cannot send VAD config, not connected (state=$_state)');
-      return;
-    }
-
-    _channel?.sink.add(
-      jsonEncode({'type': 'vad_config_update', 'config': config}),
-    );
-  }
-
   void sendEndTurn() {
     if (_state != WsConnectionState.connected) {
       debugPrint('WS: Cannot send end_turn, not connected (state=$_state)');

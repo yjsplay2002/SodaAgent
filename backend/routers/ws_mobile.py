@@ -16,6 +16,12 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.runners import Runner
 from google.genai import types
 
+from services.live_tool_context import (
+    clear_session_location,
+    reset_active_session,
+    set_active_session,
+    set_session_location,
+)
 from services.session_manager import session_service
 from services.turn_controller import TurnController
 from soda_agent.agent import live_agent
@@ -597,6 +603,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         turn_complete_count = 0
         already_nudged = False
         nonlocal assistant_has_audio
+        session_token = set_active_session(session_id)
 
         try:
             async for event in runner.run_live(
@@ -664,7 +671,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                         }
                     )
 
-                has_transcription = bool(output_texts)
+                has_transcription = bool(input_texts) or bool(output_texts)
                 sent_audio = False
                 sent_visible_part = False
 
@@ -824,6 +831,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                 await send_client({"type": "error", "message": str(exc)})
             except Exception:
                 pass
+        finally:
+            reset_active_session(session_token)
 
     async def process_client_messages():
         try:
@@ -861,6 +870,14 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
 
                 if msg_type == "context_update":
                     client_context = _normalize_client_context(msg.get("context"))
+                    if client_context:
+                        set_session_location(
+                            session_id,
+                            client_context.latitude,
+                            client_context.longitude,
+                        )
+                    else:
+                        clear_session_location(session_id)
                     if turn_controller.current_user_turn_id is None:
                         audio_context_sent = False
                     continue
@@ -943,5 +960,6 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             finalize_timer.cancel()
         if duck_timer_task:
             duck_timer_task.cancel()
+        clear_session_location(session_id)
         live_queue.close()
         logger.info("Session ended: user=%s session=%s", user_id, session_id)

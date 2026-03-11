@@ -142,7 +142,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
           const Spacer(),
           SizedBox(
-            width: 120,
+            width: 56,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
@@ -158,11 +158,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         )
                       : const Icon(Icons.download_rounded, color: Colors.white),
                   tooltip: 'Export conversation',
-                ),
-                IconButton(
-                  onPressed: () => _openVoiceSettings(session),
-                  icon: const Icon(Icons.tune_rounded, color: Colors.white),
-                  tooltip: 'Voice settings',
                 ),
               ],
             ),
@@ -306,108 +301,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     FocusScope.of(context).unfocus();
   }
 
-  Future<void> _openVoiceSettings(VoiceSessionState session) async {
-    var draft = session.vadConfig;
-
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              backgroundColor: const Color(0xFF151922),
-              title: const Text(
-                'Voice Settings',
-                style: TextStyle(color: Colors.white),
-              ),
-              content: SizedBox(
-                width: 420,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _VadSlider(
-                      title: 'Voice detection sensitivity',
-                      valueLabel:
-                          '${draft.speechRmsThreshold.toStringAsFixed(0)} level',
-                      helper:
-                          'Higher values ignore more background noise, but may miss quiet speech.',
-                      min: 100,
-                      max: 2000,
-                      divisions: 38,
-                      value: draft.speechRmsThreshold.clamp(100, 2000),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          draft = draft.copyWith(speechRmsThreshold: value);
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    _VadSlider(
-                      title: 'Pause before reply',
-                      valueLabel: '${draft.endSilenceMs.toStringAsFixed(0)} ms',
-                      helper:
-                          'How long Soda waits after you stop speaking before it answers.',
-                      min: 200,
-                      max: 1800,
-                      divisions: 32,
-                      value: draft.endSilenceMs.clamp(200, 1800),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          draft = draft.copyWith(endSilenceMs: value);
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    _VadSlider(
-                      title: 'Minimum speech length',
-                      valueLabel: '${draft.minSpeechMs.toStringAsFixed(0)} ms',
-                      helper:
-                          'Very short bursts below this are treated as noise instead of a real request.',
-                      min: 50,
-                      max: 800,
-                      divisions: 30,
-                      value: draft.minSpeechMs.clamp(50, 800),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          draft = draft.copyWith(minSpeechMs: value);
-                        });
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    setDialogState(() {
-                      draft = VadConfig.defaults;
-                    });
-                  },
-                  child: const Text('Reset'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    ref
-                        .read(voiceSessionProvider.notifier)
-                        .updateVadConfig(draft);
-                    Navigator.of(context).pop();
-                    _showSnackBar('Voice settings updated.');
-                  },
-                  child: const Text('Apply'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(
       context,
@@ -447,73 +340,5 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         });
       }
     }
-  }
-}
-
-class _VadSlider extends StatelessWidget {
-  final String title;
-  final String valueLabel;
-  final String helper;
-  final double min;
-  final double max;
-  final int divisions;
-  final double value;
-  final ValueChanged<double> onChanged;
-
-  const _VadSlider({
-    required this.title,
-    required this.valueLabel,
-    required this.helper,
-    required this.min,
-    required this.max,
-    required this.divisions,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            Text(
-              valueLabel,
-              style: TextStyle(
-                color: SodaTheme.accent,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          helper,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.6),
-            fontSize: 12,
-            height: 1.35,
-          ),
-        ),
-        Slider(
-          min: min,
-          max: max,
-          divisions: divisions,
-          value: value,
-          activeColor: SodaTheme.accent,
-          onChanged: onChanged,
-        ),
-      ],
-    );
   }
 }
