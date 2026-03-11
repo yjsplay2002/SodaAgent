@@ -15,6 +15,7 @@ if os.getenv("GOOGLE_API_KEY") and not os.getenv("GOOGLE_GENAI_USE_VERTEXAI"):
     os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "FALSE")
 
 from routers.health import router as health_router
+from routers.claude_code import router as claude_code_router
 from routers.ws_mobile import router as ws_mobile_router
 
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(claude_code_router)
 app.include_router(ws_mobile_router)
 
 

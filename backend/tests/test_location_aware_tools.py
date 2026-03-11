@@ -1,6 +1,7 @@
 import sys
 import unittest
 import importlib.util
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -26,6 +27,7 @@ weather_tools = _load_module(
     "weather_tools_test",
     "soda_agent/tools/weather_tools.py",
 )
+live_tool_context = importlib.import_module("services.live_tool_context")
 
 
 class _FakeResponse:
@@ -40,6 +42,9 @@ class _FakeResponse:
 
 
 class LocationAwareToolsTest(unittest.TestCase):
+    def setUp(self):
+        live_tool_context.clear_session_location("test-session")
+
     def test_maps_normalizes_coordinate_context_sentence(self):
         value = (
             "[Context only] Device location coordinates: 37.56650,126.97800. "
@@ -80,6 +85,101 @@ class LocationAwareToolsTest(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["city"], "your current location")
         self.assertIn("near your current location", result["summary"])
+
+    def test_maps_uses_session_location_for_current_origin(self):
+        token = live_tool_context.set_active_session("test-session")
+        live_tool_context.set_session_location("test-session", 37.5665, 126.9780)
+        try:
+            self.assertEqual(
+                maps_tools._resolve_origin_input("current location"),
+                "37.56650,126.97800",
+            )
+        finally:
+            live_tool_context.reset_active_session(token)
+
+    def test_weather_strips_query_suffix_from_city(self):
+        self.assertEqual(
+            weather_tools._normalize_city("성남 분당구 날씨"),
+            "성남 분당구",
+        )
+
+    def test_maps_prefers_naver_for_korean_current_location_route(self):
+        token = live_tool_context.set_active_session("test-session")
+        live_tool_context.set_session_location("test-session", 37.5665, 126.9780)
+        try:
+            with (
+                patch.object(maps_tools, "_NAVER_MAPS_API_KEY_ID", "test-id"),
+                patch.object(maps_tools, "_NAVER_MAPS_API_KEY", "test-key"),
+            ):
+                self.assertTrue(
+                    maps_tools._should_use_naver(
+                        "37.56650,126.97800",
+                        "서울역",
+                    )
+                )
+        finally:
+            live_tool_context.reset_active_session(token)
+
+    def test_maps_get_eta_uses_naver_for_korean_route(self):
+        token = live_tool_context.set_active_session("test-session")
+        live_tool_context.set_session_location("test-session", 37.5665, 126.9780)
+        try:
+            with (
+                patch.object(maps_tools, "_NAVER_MAPS_API_KEY_ID", "test-id"),
+                patch.object(maps_tools, "_NAVER_MAPS_API_KEY", "test-key"),
+                patch.object(maps_tools.httpx, "get") as mock_get,
+            ):
+                def fake_get(url, params=None, headers=None, timeout=None):
+                    if url.startswith(maps_tools._NAVER_GEOCODE_URL):
+                        return _FakeResponse(
+                            {
+                                "addresses": [
+                                    {
+                                        "x": "127.00110",
+                                        "y": "37.57000",
+                                        "roadAddress": "서울특별시 중구 서울역",
+                                    }
+                                ]
+                            }
+                        )
+
+                    if url.startswith(maps_tools._NAVER_DIRECTIONS_URL):
+                        return _FakeResponse(
+                            {
+                                "route": {
+                                    "trafast": [
+                                        {
+                                            "summary": {
+                                                "distance": 12345,
+                                                "duration": 1800000,
+                                                "tollFare": 0,
+                                                "fuelPrice": 2400,
+                                            },
+                                            "guide": [
+                                                {"instructions": "직진"},
+                                                {"instructions": "좌회전"},
+                                            ],
+                                        }
+                                    ]
+                                }
+                            }
+                        )
+
+                    raise AssertionError(f"Unexpected URL: {url}")
+
+                mock_get.side_effect = fake_get
+
+                result = maps_tools.get_eta("서울역", "current location")
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["provider"], "naver_maps")
+            self.assertEqual(result["origin"], "your current location")
+            self.assertEqual(result["destination"], "서울특별시 중구 서울역")
+            self.assertEqual(result["distance"], "12.3 km")
+            self.assertEqual(result["duration"], "30 min")
+            self.assertEqual(result["traffic"], "realtime")
+        finally:
+            live_tool_context.reset_active_session(token)
 
 
 if __name__ == "__main__":

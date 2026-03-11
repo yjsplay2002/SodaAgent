@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 
 import httpx
+from services.live_tool_context import get_current_session_location
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ _COORDINATE_SENTENCE_RE = re.compile(
 )
 _COORDINATE_LABEL_RE = re.compile(
     r"coordinates?\s*[:=]\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lon>-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_WEATHER_QUERY_SUFFIX_RE = re.compile(
+    r"\s*(?:날씨|기온|예보|forecast|weather|현재)\s*$",
     re.IGNORECASE,
 )
 
@@ -61,21 +66,44 @@ _WMO_CODES: dict[int, str] = {
 
 def _geocode(city: str) -> tuple[float, float, str] | None:
     """Resolve city name to (latitude, longitude, resolved_name)."""
-    try:
-        resp = httpx.get(
-            _GEOCODING_URL,
-            params={"name": city, "count": 1, "language": "en"},
-            timeout=5,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("results"):
-            return None
-        r = data["results"][0]
-        return r["latitude"], r["longitude"], r.get("name", city)
-    except Exception as e:
-        logger.error("Geocoding error for '%s': %s", city, e)
-        return None
+    for candidate in _geocode_candidates(city):
+        for language in ("ko", "en"):
+            try:
+                resp = httpx.get(
+                    _GEOCODING_URL,
+                    params={"name": candidate, "count": 1, "language": language},
+                    timeout=5,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if not data.get("results"):
+                    continue
+                r = data["results"][0]
+                return r["latitude"], r["longitude"], r.get("name", candidate)
+            except Exception as e:
+                logger.error(
+                    "Geocoding error for '%s' (language=%s): %s",
+                    candidate,
+                    language,
+                    e,
+                )
+    return None
+
+
+def _geocode_candidates(city: str) -> list[str]:
+    normalized = city.strip()
+    candidates = [normalized]
+
+    stripped = _WEATHER_QUERY_SUFFIX_RE.sub("", normalized).strip()
+    if stripped and stripped not in candidates:
+        candidates.append(stripped)
+
+    if stripped.endswith(("시", "군", "구")):
+        trimmed = stripped[:-1].strip()
+        if trimmed and trimmed not in candidates:
+            candidates.append(trimmed)
+
+    return candidates
 
 
 def _extract_coordinates(location: str) -> tuple[float, float] | None:
@@ -101,7 +129,32 @@ def _resolve_location(location: str) -> tuple[float, float, str] | None:
         lat, lon = coordinates
         return lat, lon, "your current location"
 
+    if _uses_current_location(location):
+        current_location = get_current_session_location()
+        if current_location:
+            lat, lon = current_location
+            return lat, lon, "your current location"
+
     return _geocode(location)
+
+
+def _uses_current_location(value: str | None) -> bool:
+    if value is None:
+        return True
+
+    normalized = " ".join(value.strip().lower().split())
+    return normalized in {
+        "",
+        "current location",
+        "my location",
+        "here",
+        "current",
+        "your current location",
+        "현재 위치",
+        "지금 위치",
+        "내 위치",
+        "현위치",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +343,11 @@ def _forecast_unavailable(city: str) -> dict:
 
 def _normalize_city(city: str | None) -> str | None:
     if city is None:
+        if get_current_session_location():
+            return "your current location"
         return None
 
-    normalized = city.strip()
+    normalized = _WEATHER_QUERY_SUFFIX_RE.sub("", city.strip()).strip()
+    if _uses_current_location(normalized):
+        return "your current location"
     return normalized or None

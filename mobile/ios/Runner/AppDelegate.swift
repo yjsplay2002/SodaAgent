@@ -1,16 +1,29 @@
 import Flutter
+import AVFoundation
 import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
-  lazy var flutterEngine = FlutterEngine(name: "soda_main_engine")
-
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    flutterEngine.run()
-    GeneratedPluginRegistrant.register(with: flutterEngine)
+    configureAudioSession()
+    GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  private func configureAudioSession() {
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(
+        .playAndRecord,
+        options: [.defaultToSpeaker, .allowBluetooth]
+      )
+      try session.setMode(.voiceChat)
+      try session.setActive(true)
+    } catch {
+      NSLog("Audio session configuration failed: \(error)")
+    }
   }
 }

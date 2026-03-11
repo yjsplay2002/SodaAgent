@@ -7,16 +7,21 @@ import '../services/voice_session.dart';
 
 class VoiceOrb extends StatefulWidget {
   final VoiceState voiceState;
+  final bool isUserSpeechDetected;
   final VoidCallback? onTap;
 
-  const VoiceOrb({super.key, required this.voiceState, this.onTap});
+  const VoiceOrb({
+    super.key,
+    required this.voiceState,
+    required this.isUserSpeechDetected,
+    this.onTap,
+  });
 
   @override
   State<VoiceOrb> createState() => _VoiceOrbState();
 }
 
-class _VoiceOrbState extends State<VoiceOrb>
-    with TickerProviderStateMixin {
+class _VoiceOrbState extends State<VoiceOrb> with TickerProviderStateMixin {
   late AnimationController _pulseController;
   late AnimationController _waveController;
 
@@ -44,6 +49,10 @@ class _VoiceOrbState extends State<VoiceOrb>
   Widget build(BuildContext context) {
     final color = _colorForState(widget.voiceState);
     final isActive = widget.voiceState != VoiceState.idle;
+    final showSpeechWave =
+        widget.voiceState == VoiceState.speaking ||
+        (widget.voiceState == VoiceState.listening &&
+            widget.isUserSpeechDetected);
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -59,10 +68,15 @@ class _VoiceOrbState extends State<VoiceOrb>
                 pulseValue: isActive ? _pulseController.value : 0.0,
                 waveValue: isActive ? _waveController.value : 0.0,
                 voiceState: widget.voiceState,
+                isUserSpeechDetected: widget.isUserSpeechDetected,
+                showSpeechWave: showSpeechWave,
               ),
               child: Center(
                 child: Icon(
-                  _iconForState(widget.voiceState),
+                  _iconForState(
+                    widget.voiceState,
+                    isUserSpeechDetected: widget.isUserSpeechDetected,
+                  ),
                   color: Colors.white,
                   size: 48,
                 ),
@@ -75,18 +89,25 @@ class _VoiceOrbState extends State<VoiceOrb>
   }
 
   Color _colorForState(VoiceState state) => switch (state) {
-        VoiceState.idle => Colors.grey.shade600,
-        VoiceState.listening => SodaTheme.listening,
-        VoiceState.thinking => SodaTheme.accent,
-        VoiceState.speaking => SodaTheme.accentGlow,
-      };
+    VoiceState.idle => Colors.grey.shade600,
+    VoiceState.listening =>
+      widget.isUserSpeechDetected
+          ? SodaTheme.listening
+          : SodaTheme.listening.withValues(alpha: 0.5),
+    VoiceState.thinking => SodaTheme.accent,
+    VoiceState.speaking => SodaTheme.accentGlow,
+  };
 
-  IconData _iconForState(VoiceState state) => switch (state) {
-        VoiceState.idle => Icons.mic_off,
-        VoiceState.listening => Icons.mic,
-        VoiceState.thinking => Icons.auto_awesome,
-        VoiceState.speaking => Icons.volume_up,
-      };
+  IconData _iconForState(
+    VoiceState state, {
+    required bool isUserSpeechDetected,
+  }) => switch (state) {
+    VoiceState.idle => Icons.mic_off,
+    VoiceState.listening =>
+      isUserSpeechDetected ? Icons.graphic_eq_rounded : Icons.mic_none_rounded,
+    VoiceState.thinking => Icons.auto_awesome,
+    VoiceState.speaking => Icons.volume_up,
+  };
 }
 
 class _OrbPainter extends CustomPainter {
@@ -94,12 +115,16 @@ class _OrbPainter extends CustomPainter {
   final double pulseValue;
   final double waveValue;
   final VoiceState voiceState;
+  final bool isUserSpeechDetected;
+  final bool showSpeechWave;
 
   _OrbPainter({
     required this.color,
     required this.pulseValue,
     required this.waveValue,
     required this.voiceState,
+    required this.isUserSpeechDetected,
+    required this.showSpeechWave,
   });
 
   @override
@@ -109,8 +134,14 @@ class _OrbPainter extends CustomPainter {
 
     // Outer glow rings
     for (var i = 3; i >= 1; i--) {
-      final glowRadius = baseRadius + (i * 12) + (pulseValue * 8);
-      final opacity = (0.08 - i * 0.02).clamp(0.0, 1.0);
+      final glowRadius =
+          baseRadius +
+          (i * 12) +
+          (pulseValue * (isUserSpeechDetected ? 12 : 6));
+      final opacity = ((isUserSpeechDetected ? 0.12 : 0.07) - i * 0.02).clamp(
+        0.0,
+        1.0,
+      );
       canvas.drawCircle(
         center,
         glowRadius,
@@ -120,8 +151,7 @@ class _OrbPainter extends CustomPainter {
       );
     }
 
-    // Wave distortion for speaking state
-    if (voiceState == VoiceState.speaking || voiceState == VoiceState.listening) {
+    if (showSpeechWave) {
       final wavePaint = Paint()
         ..color = color.withValues(alpha: 0.15)
         ..style = PaintingStyle.stroke
@@ -131,7 +161,8 @@ class _OrbPainter extends CustomPainter {
         final path = Path();
         final ringRadius = baseRadius + 20 + ring * 15;
         for (var angle = 0.0; angle < 2 * pi; angle += 0.05) {
-          final wave = sin(angle * 6 + waveValue * 2 * pi + ring) * 4 * pulseValue;
+          final wave =
+              sin(angle * 6 + waveValue * 2 * pi + ring) * 4 * pulseValue;
           final r = ringRadius + wave;
           final x = center.dx + r * cos(angle);
           final y = center.dy + r * sin(angle);
@@ -149,18 +180,20 @@ class _OrbPainter extends CustomPainter {
     // Main orb
     final gradient = RadialGradient(
       colors: [
-        color.withValues(alpha: 0.9),
+        color.withValues(alpha: isUserSpeechDetected ? 0.95 : 0.72),
         color.withValues(alpha: 0.6),
         color.withValues(alpha: 0.3),
       ],
     );
-    final orbRadius = baseRadius + (pulseValue * 4);
+    final orbRadius =
+        baseRadius + (pulseValue * (isUserSpeechDetected ? 6 : 3));
     canvas.drawCircle(
       center,
       orbRadius,
-      Paint()..shader = gradient.createShader(
-        Rect.fromCircle(center: center, radius: orbRadius),
-      ),
+      Paint()
+        ..shader = gradient.createShader(
+          Rect.fromCircle(center: center, radius: orbRadius),
+        ),
     );
 
     // Inner bright core
@@ -168,7 +201,9 @@ class _OrbPainter extends CustomPainter {
       center,
       orbRadius * 0.5,
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.15 + pulseValue * 0.1),
+        ..color = Colors.white.withValues(
+          alpha: (isUserSpeechDetected ? 0.22 : 0.14) + pulseValue * 0.1,
+        ),
     );
   }
 

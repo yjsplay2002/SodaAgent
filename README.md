@@ -69,6 +69,45 @@ adk web soda_agent
 uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
+### Claude Code Worker
+
+You can also expose Claude Code through the FastAPI backend for server-side
+coding tasks initiated by the mobile client.
+
+```bash
+# Install Claude Code on the server
+npm install -g @anthropic-ai/claude-code
+
+# Configure one auth mode
+export ANTHROPIC_API_KEY=your-anthropic-api-key
+# or:
+# export CLAUDE_CODE_USE_BEDROCK=1
+# export CLAUDE_CODE_USE_VERTEX=1
+
+# Optional runtime controls
+export CLAUDE_CODE_WORKSPACE_ROOT=/absolute/path/to/SodaAgent
+export CLAUDE_CODE_PERMISSION_MODE=bypassPermissions
+export CLAUDE_CODE_TIMEOUT_SECONDS=600
+
+# Verify CLI/auth
+claude --version
+claude auth status || true
+
+# Backend endpoints
+curl http://localhost:8080/api/code/claude/status
+curl -X POST http://localhost:8080/api/code/claude/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "Summarize the backend architecture and suggest one refactor.",
+    "working_directory": "backend"
+  }'
+```
+
+`/api/code/claude/run` restricts execution to `CLAUDE_CODE_WORKSPACE_ROOT` and
+returns Claude Code output synchronously. For unattended servers, isolate this
+workspace because `bypassPermissions` allows non-interactive edits inside the
+configured repo.
+
 ### Deploy to GCP
 
 ```bash

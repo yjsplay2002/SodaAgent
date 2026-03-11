@@ -5,33 +5,35 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:logger/logger.dart';
-import 'package:record/record.dart';
 
 /// Handles microphone capture, speaker playback, and audio file operations.
 ///
 /// Recording: PCM 16-bit 16kHz mono → Gemini Live API
 /// Playback:  PCM 16-bit 24kHz mono ← Gemini Live API (Aoede female voice)
 class AudioService {
-  AudioRecorder? _recorder;
+  static const double _playbackGain = 1.0;
+
+  FlutterSoundRecorder? _recorder;
   FlutterSoundPlayer? _player;
   FlutterSoundPlayer? _filePlayer;
 
-  StreamSubscription? _recorderSub;
   final _audioController = StreamController<Uint8List>.broadcast();
 
   bool _isRecording = false;
+  bool _recorderOpened = false;
   bool _playerOpened = false;
   bool _isPlaying = false;
   bool _filePlayerOpened = false;
   String? currentlyPlayingFile;
   double _liveVolume = 1.0;
-  Completer<void>? _playbackStartCompleter;
+  Future<void>? _pendingPlaybackStart;
 
   Stream<Uint8List> get audioStream => _audioController.stream;
   bool get isRecording => _isRecording;
   bool get isPlaying => _isPlaying;
 
-  AudioRecorder get _recorderInstance => _recorder ??= AudioRecorder();
+  FlutterSoundRecorder get _streamRecorder =>
+      _recorder ??= FlutterSoundRecorder(logLevel: Level.error);
 
   FlutterSoundPlayer get _livePlayer =>
       _player ??= FlutterSoundPlayer(logLevel: Level.error);
@@ -39,32 +41,35 @@ class AudioService {
   FlutterSoundPlayer get _savedFilePlayer =>
       _filePlayer ??= FlutterSoundPlayer(logLevel: Level.error);
 
+  Future<void> _ensureRecorderOpen() async {
+    if (_recorderOpened) return;
+    await _streamRecorder.openRecorder();
+    _recorderOpened = true;
+    debugPrint('AudioService: Recorder opened');
+  }
+
   Future<bool> hasPermission() async {
-    return await _recorderInstance.hasPermission();
+    return true;
   }
 
   // ─── Recording ───
 
   Future<bool> startRecording() async {
     if (_isRecording) return true;
-    final recorder = _recorderInstance;
-    final hasPerms = await recorder.hasPermission();
-    if (!hasPerms) return false;
     try {
-      final stream = await recorder.startStream(
-        const RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          sampleRate: 16000,
-          numChannels: 1,
-          autoGain: false,
-          echoCancel: false,
-          noiseSuppress: false,
-        ),
+      await _ensureRecorderOpen();
+      await _streamRecorder.startRecorder(
+        toStream: _audioController.sink,
+        codec: Codec.pcm16,
+        sampleRate: 16000,
+        numChannels: 1,
+        bufferSize: 2048,
+        audioSource: AudioSource.defaultSource,
+        enableEchoCancellation: !Platform.isIOS,
+        enableNoiseSuppression: !Platform.isIOS,
       );
-      _recorderSub = stream.listen((data) {
-        _audioController.add(data);
-      });
       _isRecording = true;
+      debugPrint('AudioService: Recording started');
       return true;
     } catch (e) {
       debugPrint('AudioService: startRecording failed: $e');
@@ -75,12 +80,11 @@ class AudioService {
 
   Future<void> stopRecording() async {
     if (!_isRecording) return;
-    await _recorderSub?.cancel();
-    _recorderSub = null;
     try {
-      await _recorder?.stop();
+      await _recorder?.stopRecorder();
     } catch (_) {}
     _isRecording = false;
+    debugPrint('AudioService: Recording stopped');
   }
 
   // ─── Live Stream Playback ───
@@ -95,13 +99,12 @@ class AudioService {
 
   Future<void> startPlayback({int sampleRate = 24000}) async {
     if (_isPlaying) return;
-    // Serialize concurrent calls so startPlayerFromStream is never called twice.
-    if (_playbackStartCompleter != null) {
-      await _playbackStartCompleter!.future;
+    if (_pendingPlaybackStart != null) {
+      await _pendingPlaybackStart;
       return;
     }
-    _playbackStartCompleter = Completer<void>();
-    try {
+
+    final startFuture = () async {
       await _ensurePlayerOpen();
       await _livePlayer.startPlayerFromStream(
         codec: Codec.pcm16,
@@ -113,22 +116,25 @@ class AudioService {
       await _livePlayer.setVolume(_liveVolume);
       _isPlaying = true;
       debugPrint('AudioService: Playback started at ${sampleRate}Hz');
-      _playbackStartCompleter!.complete();
-    } catch (e) {
-      _playbackStartCompleter!.completeError(e);
-      _isPlaying = false;
-      rethrow;
+    }();
+
+    _pendingPlaybackStart = startFuture;
+    try {
+      await startFuture;
     } finally {
-      _playbackStartCompleter = null;
+      _pendingPlaybackStart = null;
     }
   }
 
   void feedAudio(Uint8List pcmData) {
     if (!_isPlaying) return;
-    _livePlayer.uint8ListSink?.add(pcmData);
+    _livePlayer.uint8ListSink?.add(_applyPlaybackGain(pcmData));
   }
 
   Future<void> stopPlayback() async {
+    if (_pendingPlaybackStart != null) {
+      await _pendingPlaybackStart;
+    }
     if (!_isPlaying) return;
     try {
       await _player?.stopPlayer();
@@ -174,7 +180,7 @@ class AudioService {
       final sink = file.openWrite();
       sink.add(_wavHeader(dataSize, sampleRate));
       for (final chunk in pcmChunks) {
-        sink.add(chunk);
+        sink.add(_applyPlaybackGain(chunk));
       }
       await sink.close();
 
@@ -244,6 +250,7 @@ class AudioService {
         onFinished?.call();
       },
     );
+    await _savedFilePlayer.setVolume(1.0);
     debugPrint('AudioService: Playing file $path');
   }
 
@@ -262,10 +269,32 @@ class AudioService {
     stopRecording();
     stopPlayback();
     stopFilePlayback();
+    if (_recorderOpened) _recorder?.closeRecorder();
     if (_playerOpened) _player?.closePlayer();
     if (_filePlayerOpened) _filePlayer?.closePlayer();
-    _recorder?.dispose();
     _audioController.close();
+  }
+
+  Uint8List _applyPlaybackGain(Uint8List pcmData) {
+    if (_playbackGain == 1.0 || pcmData.isEmpty) {
+      return pcmData;
+    }
+
+    final input = ByteData.sublistView(pcmData);
+    final output = Uint8List(pcmData.length);
+    final outputData = ByteData.sublistView(output);
+
+    for (var offset = 0; offset + 1 < pcmData.length; offset += 2) {
+      final sample = input.getInt16(offset, Endian.little);
+      final scaled = (sample * _playbackGain).round().clamp(-32768, 32767);
+      outputData.setInt16(offset, scaled, Endian.little);
+    }
+
+    if (pcmData.length.isOdd) {
+      output[pcmData.length - 1] = pcmData.last;
+    }
+
+    return output;
   }
 }
 

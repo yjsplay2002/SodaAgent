@@ -166,8 +166,8 @@ class _TranscriptBubble extends StatelessWidget {
                 ),
               ],
               if (hasAudio && !isUser && !isSystem) ...[
-                const SizedBox(height: 6),
-                _AudioPlayRow(
+                const SizedBox(height: 10),
+                _AudioPlayButton(
                   isPlaying: isPlayingAudio,
                   onTap: isPlayingAudio ? onStopAudio : onPlayAudio,
                 ),
@@ -180,33 +180,49 @@ class _TranscriptBubble extends StatelessWidget {
   }
 }
 
-class _AudioPlayRow extends StatelessWidget {
+class _AudioPlayButton extends StatelessWidget {
   final bool isPlaying;
   final VoidCallback? onTap;
 
-  const _AudioPlayRow({required this.isPlaying, this.onTap});
+  const _AudioPlayButton({required this.isPlaying, this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isPlaying ? Icons.stop_circle_outlined : Icons.play_circle_outlined,
-            color: Colors.white.withValues(alpha: 0.6),
-            size: 20,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Ink(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+            borderRadius: BorderRadius.circular(12),
           ),
-          const SizedBox(width: 4),
-          Text(
-            isPlaying ? 'Stop' : 'Play',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.5),
-              fontSize: 12,
-            ),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isPlaying
+                    ? Icons.stop_circle_outlined
+                    : Icons.play_circle_outline,
+                size: 18,
+                color: Colors.white.withValues(alpha: 0.8),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                isPlaying ? 'Stop playback' : 'Play response',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white.withValues(alpha: 0.85),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

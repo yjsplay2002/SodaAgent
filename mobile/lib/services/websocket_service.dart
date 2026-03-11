@@ -72,6 +72,7 @@ class WebSocketService {
   final _messageController = StreamController<WsMessage>.broadcast();
   final _stateController = StreamController<WsConnectionState>.broadcast();
   WsConnectionState _state = WsConnectionState.disconnected;
+  int _audioChunkCount = 0;
   Timer? _reconnectTimer;
   int _reconnectAttempt = 0;
   String? _url;
@@ -159,6 +160,12 @@ class WebSocketService {
 
   void sendAudio(Uint8List pcmData) {
     if (_state != WsConnectionState.connected) return;
+    _audioChunkCount += 1;
+    if (_audioChunkCount <= 3 || _audioChunkCount % 10 == 0) {
+      debugPrint(
+        'WS: Sent audio chunk #$_audioChunkCount bytes=${pcmData.length}',
+      );
+    }
     final msg = jsonEncode({
       'type': 'audio_chunk',
       'data': base64Encode(pcmData),
@@ -186,6 +193,27 @@ class WebSocketService {
     _channel?.sink.add(
       jsonEncode({'type': 'context_update', 'context': context}),
     );
+  }
+
+  void sendVadConfig(Map<String, Object?> config) {
+    if (_state != WsConnectionState.connected) {
+      debugPrint('WS: Cannot send VAD config, not connected (state=$_state)');
+      return;
+    }
+
+    _channel?.sink.add(
+      jsonEncode({'type': 'vad_config_update', 'config': config}),
+    );
+  }
+
+  void sendEndTurn() {
+    if (_state != WsConnectionState.connected) {
+      debugPrint('WS: Cannot send end_turn, not connected (state=$_state)');
+      return;
+    }
+
+    debugPrint('WS: Sending end_turn');
+    _channel?.sink.add(jsonEncode({'type': 'end_turn'}));
   }
 
   void disconnect() {
