@@ -682,6 +682,22 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
           isAssistantDucked: false,
         );
 
+      case 'proactive_nudge':
+        // Agent is proactively reaching out (e.g. reminder fired).
+        // The actual speech will follow via normal turn_started/audio events.
+        // Show an immediate transcript entry so the user sees something.
+        final nudgeText = msg.text ?? msg.error ?? 'Reminder';
+        final nudgeTurnId =
+            'proactive_${DateTime.now().millisecondsSinceEpoch}';
+        _upsertTranscript(
+          turnId: nudgeTurnId,
+          role: 'assistant',
+          text: nudgeText,
+        );
+        state = state.copyWith(
+          voiceState: VoiceState.thinking,
+          isUserSpeechDetected: false,
+        );
       default:
         debugPrint('VoiceSession: Unknown message type=${msg.type}');
     }

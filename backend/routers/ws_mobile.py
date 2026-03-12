@@ -19,9 +19,12 @@ from google.genai import types
 from services.live_tool_context import (
     clear_session_location,
     reset_active_session,
+    reset_active_user,
     set_active_session,
+    set_active_user,
     set_session_location,
 )
+from services.ws_registry import ws_registry
 from services.session_manager import session_service
 from services.turn_controller import TurnController
 from soda_agent.agent import live_agent
@@ -39,6 +42,7 @@ from soda_agent.tools.maps_tools import (
 from soda_agent.tools.messaging_tools import read_messages, send_message
 from soda_agent.tools.music_tools import pause_music, play_song, skip_track
 from soda_agent.tools.vehicle_tools import get_vehicle_status
+from soda_agent.tools.reminder_tools import set_reminder, list_reminders, cancel_reminder, cancel_all_reminders
 from soda_agent.tools.weather_tools import get_current_weather, get_forecast
 
 logger = logging.getLogger(__name__)
@@ -77,6 +81,19 @@ _TOOL_MAP = {
     "read_messages": read_messages,
     "send_message": send_message,
     "get_vehicle_status": get_vehicle_status,
+    "set_reminder": set_reminder,
+    "list_reminders": list_reminders,
+    "cancel_reminder": cancel_reminder,
+    "cancel_all_reminders": cancel_all_reminders,
+}
+
+# Tools that must NOT be re-executed by the FALLBACK path because they are
+# state-mutating (set/cancel reminders, send messages, create events).  When
+# Gemini calls one of these but doesn't produce follow-up audio, we skip the
+# server-side re-execution to avoid duplicate side-effects.
+_FALLBACK_EXCLUDED_TOOLS: set[str] = {
+    "set_reminder", "cancel_reminder", "cancel_all_reminders",
+    "list_reminders", "create_event", "send_message",
 }
 
 
@@ -417,6 +434,9 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         async with send_lock:
             await websocket.send_json(payload)
 
+    # Register connection in the global WebSocket registry for proactive messaging
+    ws_registry.register(user_id=user_id, send_fn=send_client, live_queue=live_queue)
+
     async def commit_user_turn_if_needed() -> str | None:
         snapshot = turn_controller.commit_user_turn()
         if not snapshot:
@@ -602,8 +622,10 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         got_audio_after_tool = False
         turn_complete_count = 0
         already_nudged = False
+        _fallback_task: asyncio.Task | None = None
         nonlocal assistant_has_audio
         session_token = set_active_session(session_id)
+        user_token = set_active_user(user_id)
 
         try:
             async for event in runner.run_live(
@@ -621,6 +643,9 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                     got_audio_after_tool = False
                     turn_complete_count = 0
                     already_nudged = False
+                    if _fallback_task:
+                        _fallback_task.cancel()
+                        _fallback_task = None
 
                 input_texts = _extract_transcription_texts(
                     getattr(event, "input_transcription", None)
@@ -727,6 +752,9 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 }
                             )
                             got_audio_after_tool = True
+                            if _fallback_task:
+                                _fallback_task.cancel()
+                                _fallback_task = None
                             sent_audio = True
                             sent_visible_part = True
                             continue
@@ -759,56 +787,79 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                     event.is_final_response()
                     and pending_tool_name
                     and not already_nudged
+                    and not got_audio_after_tool
+                    and _fallback_task is None
                 ):
                     turn_complete_count += 1
-                    if turn_complete_count >= 2 and not got_audio_after_tool:
-                        logger.info(
-                            "FALLBACK: No audio after tool %s. Completing turn server-side.",
-                            pending_tool_name,
-                        )
-                        # Inject client location into weather tool args if missing
-                        fallback_args = dict(pending_tool_args)
-                        if (
-                            pending_tool_name in {"get_current_weather", "get_forecast"}
-                            and not fallback_args.get("city")
-                            and fallback_args.get("latitude") is None
-                            and client_context
-                        ):
-                            fallback_args["latitude"] = client_context.latitude
-                            fallback_args["longitude"] = client_context.longitude
-                        result = _execute_tool(pending_tool_name, fallback_args)
-                        if result:
-                            turn_id = await ensure_assistant_turn_started()
-                            summary = _tool_result_summary(
-                                pending_tool_name,
-                                result,
+                    if turn_complete_count >= 2:
+                        # Schedule a delayed FALLBACK — gives Gemini time to
+                        # produce audio.  If audio arrives before the timer
+                        # fires the task is cancelled (see audio handler above).
+                        _fb_tool = pending_tool_name
+                        _fb_args = dict(pending_tool_args)
+
+                        async def _delayed_fallback(
+                            tool_name: str = _fb_tool,
+                            tool_args: dict = _fb_args,
+                        ) -> None:
+                            nonlocal pending_tool_name, pending_tool_args
+                            nonlocal got_audio_after_tool, turn_complete_count
+                            nonlocal already_nudged, _fallback_task
+                            try:
+                                await asyncio.sleep(4.0)
+                            except asyncio.CancelledError:
+                                return
+                            # Double-check audio didn't arrive while sleeping
+                            if got_audio_after_tool or already_nudged:
+                                _fallback_task = None
+                                return
+                            logger.info(
+                                "FALLBACK: No audio after tool %s (4s). "
+                                "Completing turn server-side.",
+                                tool_name,
                             )
-                            snapshot = turn_controller.update_assistant_partial(
-                                summary
-                            )
-                            await send_client(
-                                {
-                                    "type": "tool_finished",
-                                    "turn_id": turn_id,
-                                    "name": pending_tool_name,
-                                    "summary": summary,
-                                }
-                            )
-                            await send_client(
-                                {
-                                    "type": "transcript_partial",
-                                    "turn_id": turn_id,
-                                    "role": snapshot.role,
-                                    "text": snapshot.text,
-                                }
-                            )
-                            turn_controller.block_assistant_output(1.5)
-                            await finalize_assistant_turn()
-                        already_nudged = True
-                        pending_tool_name = None
-                        pending_tool_args = {}
-                        got_audio_after_tool = False
-                        turn_complete_count = 0
+                            if tool_name not in _FALLBACK_EXCLUDED_TOOLS:
+                                fallback_args = dict(tool_args)
+                                if (
+                                    tool_name in {"get_current_weather", "get_forecast"}
+                                    and not fallback_args.get("city")
+                                    and fallback_args.get("latitude") is None
+                                    and client_context
+                                ):
+                                    fallback_args["latitude"] = client_context.latitude
+                                    fallback_args["longitude"] = client_context.longitude
+                                result = _execute_tool(tool_name, fallback_args)
+                                if result:
+                                    turn_id = await ensure_assistant_turn_started()
+                                    summary = _tool_result_summary(tool_name, result)
+                                    snapshot = turn_controller.update_assistant_partial(summary)
+                                    await send_client({
+                                        "type": "tool_finished",
+                                        "turn_id": turn_id,
+                                        "name": tool_name,
+                                        "summary": summary,
+                                    })
+                                    await send_client({
+                                        "type": "transcript_partial",
+                                        "turn_id": turn_id,
+                                        "role": snapshot.role,
+                                        "text": snapshot.text,
+                                    })
+                                    turn_controller.block_assistant_output(1.5)
+                                    await finalize_assistant_turn()
+                            else:
+                                logger.info(
+                                    "FALLBACK: Skipping re-execution of state-mutating tool %s",
+                                    tool_name,
+                                )
+                            already_nudged = True
+                            pending_tool_name = None
+                            pending_tool_args = {}
+                            got_audio_after_tool = False
+                            turn_complete_count = 0
+                            _fallback_task = None
+
+                        _fallback_task = asyncio.create_task(_delayed_fallback())
                 if (
                     event.is_final_response()
                     and not has_transcription
@@ -832,7 +883,11 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             except Exception:
                 pass
         finally:
+            if _fallback_task:
+                _fallback_task.cancel()
+                _fallback_task = None
             reset_active_session(session_token)
+            reset_active_user(user_token)
 
     async def process_client_messages():
         try:
@@ -961,5 +1016,6 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         if duck_timer_task:
             duck_timer_task.cancel()
         clear_session_location(session_id)
+        ws_registry.unregister(user_id)
         live_queue.close()
         logger.info("Session ended: user=%s session=%s", user_id, session_id)

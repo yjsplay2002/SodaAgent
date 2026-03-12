@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -12,8 +13,13 @@ final documentExportServiceProvider = Provider(
 class ExportedDocument {
   final String fileName;
   final String path;
+  final String content;
 
-  const ExportedDocument({required this.fileName, required this.path});
+  const ExportedDocument({
+    required this.fileName,
+    required this.path,
+    required this.content,
+  });
 }
 
 class DocumentExportException implements Exception {
@@ -44,15 +50,41 @@ class DocumentExportService {
     final directory = await _resolveExportDirectory();
     final file = File('${directory.path}/$fileName');
 
-    await file.writeAsString(
-      _buildMarkdown(
-        entries: entries,
-        conversationId: conversationId,
-        exportedAt: now,
-      ),
+    final content = _buildMarkdown(
+      entries: entries,
+      conversationId: conversationId,
+      exportedAt: now,
     );
 
-    return ExportedDocument(fileName: fileName, path: file.path);
+    await file.writeAsString(content);
+    await Clipboard.setData(ClipboardData(text: content));
+
+    return ExportedDocument(fileName: fileName, path: file.path, content: content);
+  }
+
+  Future<ExportedDocument> exportResponseAsText({
+    required TranscriptEntry entry,
+    String? conversationId,
+  }) async {
+    if (entry.text.trim().isEmpty) {
+      throw const DocumentExportException('No response text to export.');
+    }
+
+    final now = DateTime.now();
+    final fileName = 'soda_response_${_fileTimestamp(now)}.txt';
+    final directory = await _resolveExportDirectory();
+    final file = File('${directory.path}/$fileName');
+
+    final content = _buildResponseMarkdown(
+      entry: entry,
+      conversationId: conversationId,
+      exportedAt: now,
+    );
+
+    await file.writeAsString(content);
+    await Clipboard.setData(ClipboardData(text: entry.text.trim()));
+
+    return ExportedDocument(fileName: fileName, path: file.path, content: content);
   }
 
   Future<Directory> _resolveExportDirectory() async {
@@ -96,6 +128,25 @@ class DocumentExportService {
         ..writeln();
     }
 
+    return buffer.toString();
+  }
+
+  String _buildResponseMarkdown({
+    required TranscriptEntry entry,
+    required DateTime exportedAt,
+    String? conversationId,
+  }) {
+    final buffer = StringBuffer()
+      ..writeln('# Soda Response Export')
+      ..writeln()
+      ..writeln('- Exported at: ${exportedAt.toIso8601String()}')
+      ..writeln(
+        '- Conversation ID: ${conversationId?.trim().isNotEmpty == true ? conversationId!.trim() : 'not available'}',
+      )
+      ..writeln('- Role: ${_roleLabel(entry.role)}')
+      ..writeln('- Timestamp: ${entry.timestamp.toIso8601String()}')
+      ..writeln()
+      ..writeln(entry.text.trim());
     return buffer.toString();
   }
 

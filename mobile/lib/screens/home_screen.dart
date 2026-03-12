@@ -81,6 +81,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ref.read(voiceSessionProvider.notifier).playAudio(path),
                 onStopAudio: () =>
                     ref.read(voiceSessionProvider.notifier).stopAudio(),
+                onSaveResponse: (entry) =>
+                    _saveResponse(entry, session.conversationId),
               ),
             ),
             _buildTextInput(session),
@@ -307,6 +309,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _saveResponse(TranscriptEntry entry, String? conversationId) async {
+    try {
+      final exported = await ref
+          .read(documentExportServiceProvider)
+          .exportResponseAsText(
+            entry: entry,
+            conversationId: conversationId,
+          );
+      if (!mounted) return;
+      _showSnackBar('Saved to ${exported.path} (copied to clipboard)');
+    } on DocumentExportException catch (error) {
+      if (!mounted) return;
+      _showSnackBar(error.message);
+    } catch (_) {
+      if (!mounted) return;
+      _showSnackBar('Failed to save response.');
+    }
+  }
+
   Future<void> _exportConversation(VoiceSessionState session) async {
     setState(() {
       _isExporting = true;
@@ -322,7 +343,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (!mounted) {
         return;
       }
-      _showSnackBar('Saved ${exported.fileName} to ${exported.path}');
+      _showSnackBar('Saved to ${exported.path} (copied to clipboard)');
     } on DocumentExportException catch (error) {
       if (!mounted) {
         return;

@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 
 import '../services/voice_session.dart';
 
+const _longResponseThreshold = 300;
+
 class TranscriptOverlay extends StatefulWidget {
   final List<TranscriptEntry> transcripts;
   final VoiceState voiceState;
   final String? playingAudioPath;
   final void Function(String path)? onPlayAudio;
   final VoidCallback? onStopAudio;
+  final void Function(TranscriptEntry entry)? onSaveResponse;
 
   const TranscriptOverlay({
     super.key,
@@ -16,6 +19,7 @@ class TranscriptOverlay extends StatefulWidget {
     this.playingAudioPath,
     this.onPlayAudio,
     this.onStopAudio,
+    this.onSaveResponse,
   });
 
   @override
@@ -87,6 +91,9 @@ class _TranscriptOverlayState extends State<TranscriptOverlay> {
                 ? () => widget.onPlayAudio?.call(entry.audioPath!)
                 : null,
             onStopAudio: widget.onStopAudio,
+            onSaveResponse: widget.onSaveResponse != null
+                ? () => widget.onSaveResponse!(entry)
+                : null,
           );
         }
         // Typing indicator as last item
@@ -101,21 +108,28 @@ class _TranscriptBubble extends StatelessWidget {
   final bool isPlayingAudio;
   final VoidCallback? onPlayAudio;
   final VoidCallback? onStopAudio;
+  final VoidCallback? onSaveResponse;
 
   const _TranscriptBubble({
     required this.entry,
     this.isPlayingAudio = false,
     this.onPlayAudio,
     this.onStopAudio,
+    this.onSaveResponse,
   });
 
   @override
   Widget build(BuildContext context) {
     final isUser = entry.role == 'user';
     final isSystem = entry.role == 'system';
+    final isAssistant = !isUser && !isSystem;
     final hasAudio = entry.audioPath != null;
     final isInterrupted = entry.isInterrupted;
     final isLive = !entry.isFinal;
+    final isLongResponse =
+        isAssistant &&
+        entry.isFinal &&
+        entry.text.trim().length >= _longResponseThreshold;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
@@ -172,6 +186,10 @@ class _TranscriptBubble extends StatelessWidget {
                   onTap: isPlayingAudio ? onStopAudio : onPlayAudio,
                 ),
               ],
+              if (isLongResponse && onSaveResponse != null) ...[
+                const SizedBox(height: 8),
+                _SaveResponseButton(onTap: onSaveResponse),
+              ],
             ],
           ),
         ),
@@ -218,6 +236,51 @@ class _AudioPlayButton extends StatelessWidget {
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: Colors.white.withValues(alpha: 0.85),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SaveResponseButton extends StatelessWidget {
+  final VoidCallback? onTap;
+
+  const _SaveResponseButton({this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Ink(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.save_alt_rounded,
+                size: 16,
+                color: Colors.white.withValues(alpha: 0.7),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Save & copy',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white.withValues(alpha: 0.75),
                 ),
               ),
             ],

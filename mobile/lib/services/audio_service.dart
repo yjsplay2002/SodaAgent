@@ -11,7 +11,7 @@ import 'package:logger/logger.dart';
 /// Recording: PCM 16-bit 16kHz mono → Gemini Live API
 /// Playback:  PCM 16-bit 24kHz mono ← Gemini Live API (Aoede female voice)
 class AudioService {
-  static const double _playbackGain = 1.0;
+  static const double _playbackGain = 3.5;
 
   FlutterSoundRecorder? _recorder;
   FlutterSoundPlayer? _player;
