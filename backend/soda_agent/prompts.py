@@ -36,6 +36,7 @@ DELEGATION RULES:
 - Weather queries, forecasts -> WeatherAgent
 - Music requests, playback control -> MusicAgent
 - Messages, texts, contacts -> MessagingAgent
+- Todo creation, task lookup, task progress, task history -> TodoAgent
 - Everything else (general knowledge, time, math, etc.) -> GeneralAgent
 
 CONTEXT AWARENESS:

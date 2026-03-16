@@ -10,7 +10,7 @@ SERVICE_NAME="soda-agent"
 REPO_NAME="soda-agent-repo"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${SERVICE_NAME}"
 
-SECRETS="GOOGLE_API_KEY=google-api-key:latest,GOOGLE_MAPS_API_KEY=google-maps-api-key:latest"
+SECRETS="GOOGLE_API_KEY=google-api-key:latest,GOOGLE_MAPS_API_KEY=google-maps-api-key:latest,GOOGLE_OAUTH_CLIENT_ID=google-oauth-client-id:latest,GOOGLE_OAUTH_CLIENT_SECRET=google-oauth-client-secret:latest,GOOGLE_OAUTH_REFRESH_TOKEN=google-oauth-refresh-token:latest"
 
 if gcloud secrets describe "naver-maps-api-key-id" \
     --project "$PROJECT_ID" >/dev/null 2>&1; then
@@ -58,7 +58,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --session-affinity \
     --allow-unauthenticated \
     --set-secrets "$SECRETS" \
-    --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION"
+    --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,CALENDAR_TIMEZONE=Asia/Seoul"
 
 # 3. Get the service URL
 echo "[3/4] Getting service URL..."

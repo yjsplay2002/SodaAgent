@@ -116,6 +116,9 @@ class TranscriptEntry {
 
 class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   static const int _minPersistedAssistantAudioBytes = 8192;
+  static const double _localBargeInLevelThreshold = 0.03;
+  static const int _localBargeInSpeechChunks = 2;
+  static const int _localBargeInSilenceChunks = 6;
 
   final WebSocketService _ws;
   final Ref _ref;
@@ -128,6 +131,10 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   final Map<String, String> _pendingAudioPaths = {};
   final Map<String, int> _lastAudioSeqByTurn = {};
   final Set<String> _closedAssistantTurns = <String>{};
+  int _localSpeechChunkStreak = 0;
+  int _localSilenceChunkStreak = 0;
+  bool _localAssistantDuckActive = false;
+  bool _serverUserSpeechDetected = false;
 
   VoiceSessionNotifier(this._ws, this._ref) : super(const VoiceSessionState()) {
     _stateSub = _ws.stateStream.listen((s) {
@@ -168,6 +175,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     if (started) {
       _micSub?.cancel();
       _micSub = _audio.audioStream.listen((chunk) {
+        _handleLocalBargeIn(chunk);
         _ws.sendAudio(chunk);
       });
       state = state.copyWith(
@@ -466,6 +474,83 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     return '$location: ${parts.join(' · ')}';
   }
 
+  void _handleLocalBargeIn(Uint8List chunk) {
+    final assistantPlaybackActive =
+        state.activeAssistantTurnId != null &&
+        (_audio.isPlaying ||
+            state.voiceState == VoiceState.speaking ||
+            state.isAssistantDucked);
+    if (!assistantPlaybackActive) {
+      _resetLocalBargeInDetection(restorePlayback: false);
+      return;
+    }
+
+    final isSpeechLike = _pcmLevel(chunk) >= _localBargeInLevelThreshold;
+    if (isSpeechLike) {
+      _localSpeechChunkStreak += 1;
+      _localSilenceChunkStreak = 0;
+      if (!_localAssistantDuckActive &&
+          _localSpeechChunkStreak >= _localBargeInSpeechChunks) {
+        _localAssistantDuckActive = true;
+        _audio.duckPlayback(volume: 0.0);
+        state = state.copyWith(
+          isUserSpeechDetected: true,
+          isAssistantDucked: true,
+        );
+      }
+      return;
+    }
+
+    _localSpeechChunkStreak = 0;
+    if (!_localAssistantDuckActive) {
+      return;
+    }
+
+    _localSilenceChunkStreak += 1;
+    if (_localSilenceChunkStreak >= _localBargeInSilenceChunks &&
+        !_serverUserSpeechDetected) {
+      _audio.restorePlaybackVolume();
+      _resetLocalBargeInDetection();
+    }
+  }
+
+  void _resetLocalBargeInDetection({bool restorePlayback = true}) {
+    _localSpeechChunkStreak = 0;
+    _localSilenceChunkStreak = 0;
+    if (!_localAssistantDuckActive) {
+      return;
+    }
+
+    _localAssistantDuckActive = false;
+    if (restorePlayback) {
+      _audio.restorePlaybackVolume();
+    }
+    if (!_serverUserSpeechDetected) {
+      state = state.copyWith(
+        isUserSpeechDetected: false,
+        isAssistantDucked: false,
+      );
+    }
+  }
+
+  double _pcmLevel(Uint8List chunk) {
+    if (chunk.length < 2) {
+      return 0;
+    }
+
+    final data = ByteData.sublistView(chunk);
+    var total = 0.0;
+    var samples = 0;
+    for (var offset = 0; offset + 1 < chunk.length; offset += 2) {
+      total += data.getInt16(offset, Endian.little).abs() / 32768.0;
+      samples += 1;
+    }
+    if (samples == 0) {
+      return 0;
+    }
+    return total / samples;
+  }
+
   void _handleMessage(WsMessage msg) {
     switch (msg.type) {
       case 'session_ready':
@@ -474,6 +559,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 
       case 'turn_started':
         if (msg.role == 'assistant' && msg.turnId != null) {
+          _serverUserSpeechDetected = false;
+          _resetLocalBargeInDetection(restorePlayback: false);
           _closedAssistantTurns.remove(msg.turnId);
           _lastAudioSeqByTurn.remove(msg.turnId);
           state = state.copyWith(
@@ -488,6 +575,9 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 
       case 'transcript_partial':
         if (msg.turnId == null || msg.text == null) return;
+        if (msg.role == 'user') {
+          _serverUserSpeechDetected = true;
+        }
         _upsertTranscript(
           turnId: msg.turnId!,
           role: msg.role ?? 'model',
@@ -509,6 +599,9 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 
       case 'transcript_final':
         if (msg.turnId == null || msg.text == null) return;
+        if (msg.role == 'user') {
+          _serverUserSpeechDetected = true;
+        }
         _upsertTranscript(
           turnId: msg.turnId!,
           role: msg.role ?? 'model',
@@ -597,6 +690,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
         if (turnId == null) return;
         _closedAssistantTurns.add(turnId);
         debugPrint('VoiceSession: Assistant turn cancelled=$turnId');
+        _resetLocalBargeInDetection(restorePlayback: false);
         _markTranscriptCancelled(turnId, msg.text);
         _discardAudioBufferForTurn(turnId);
         _audio.stopPlayback();
@@ -613,10 +707,13 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
         );
 
       case 'assistant_duck':
-        _audio.duckPlayback();
+        _localAssistantDuckActive = true;
+        _audio.duckPlayback(volume: 0.0);
         state = state.copyWith(isAssistantDucked: true);
 
       case 'assistant_resumed':
+        _serverUserSpeechDetected = false;
+        _resetLocalBargeInDetection(restorePlayback: false);
         _audio.restorePlaybackVolume();
         state = state.copyWith(isAssistantDucked: false);
 
@@ -628,6 +725,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
           'status=${msg.status}',
         );
         if (msg.role == 'assistant') {
+          _resetLocalBargeInDetection(restorePlayback: false);
           _closedAssistantTurns.add(turnId);
           if (msg.status == null || msg.status == 'completed') {
             _saveAudioBufferForTurn(turnId);
@@ -647,6 +745,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
             isAssistantDucked: false,
           );
         } else if (msg.role == 'user') {
+          _serverUserSpeechDetected = false;
           state = state.copyWith(
             activeUserTurnId: state.activeUserTurnId == turnId
                 ? null
@@ -662,6 +761,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
         _pendingAudioPaths.clear();
         _lastAudioSeqByTurn.clear();
         _closedAssistantTurns.clear();
+        _serverUserSpeechDetected = false;
+        _resetLocalBargeInDetection(restorePlayback: false);
         _audio.stopPlayback();
         _audio.restorePlaybackVolume();
         final errorTranscripts = [
@@ -708,6 +809,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     _pendingAudioPaths.clear();
     _lastAudioSeqByTurn.clear();
     _closedAssistantTurns.clear();
+    _serverUserSpeechDetected = false;
+    _resetLocalBargeInDetection(restorePlayback: false);
     _micSub?.cancel();
     _audio.stopRecording();
     _audio.stopPlayback();

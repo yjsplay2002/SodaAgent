@@ -7,6 +7,7 @@ from soda_agent.sub_agents.general_agent import general_agent
 from soda_agent.sub_agents.messaging_agent import messaging_agent
 from soda_agent.sub_agents.music_agent import music_agent
 from soda_agent.sub_agents.navigation_agent import navigation_agent
+from soda_agent.sub_agents.todo_agent import todo_agent
 from soda_agent.sub_agents.weather_agent import weather_agent
 
 from soda_agent.tools.calendar_tools import get_upcoming_events, create_event, get_free_slots
@@ -21,6 +22,14 @@ from soda_agent.tools.music_tools import play_song, pause_music, skip_track
 from soda_agent.tools.messaging_tools import read_messages, send_message
 from soda_agent.tools.vehicle_tools import get_vehicle_status
 from soda_agent.tools.reminder_tools import set_reminder, list_reminders, cancel_reminder, cancel_all_reminders
+from soda_agent.tools.todo_tools import (
+    add_todo,
+    get_todo,
+    get_todo_history,
+    list_todos as list_saved_todos,
+    search_todos,
+    update_todo_status,
+)
 
 # Text mode (adk web, Runner.run_async): gemini-2.5-pro with sub-agents
 # Live audio mode (ws_mobile.py): native-audio-preview with flat tools (no sub-agents)
@@ -40,6 +49,7 @@ root_agent = Agent(
         weather_agent,
         music_agent,
         messaging_agent,
+        todo_agent,
         general_agent,
     ],
 )
@@ -69,6 +79,7 @@ who proactively takes care of their daily life, schedule, and needs.
 - If the user says they have a meeting/appointment, offer to set a reminder
 - If the user mentions leaving at a certain time, offer to check traffic then
 - If the user talks about something they need to do later, offer to remind them
+- If the user asks to track work items or personal tasks, offer to save them as todos
 - When delivering a reminder, be natural: "Hey, you asked me to remind you about..."
 - Use set_reminder to schedule proactive check-ins with the user
 - When a [System: Reminder Triggered] message arrives, speak to the user naturally as if you remembered on your own
@@ -78,6 +89,7 @@ who proactively takes care of their daily life, schedule, and needs.
 - Music: play_song, pause_music, skip_track
 - Messages: read_messages, send_message
 - Reminders: set_reminder, list_reminders, cancel_reminder, cancel_all_reminders
+- Todos: add_todo, list_todos, search_todos, get_todo, update_todo_status, get_todo_history
 - Vehicle: get_vehicle_status
 - General knowledge: google_search
 TOOL USAGE RULES:
@@ -103,6 +115,7 @@ live_agent = Agent(
         play_song, pause_music, skip_track,
         read_messages, send_message,
         set_reminder, list_reminders, cancel_reminder, cancel_all_reminders,
+        add_todo, list_saved_todos, search_todos, get_todo, update_todo_status, get_todo_history,
         get_vehicle_status,
         google_search,
     ],

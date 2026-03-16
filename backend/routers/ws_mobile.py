@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -95,6 +96,10 @@ _FALLBACK_EXCLUDED_TOOLS: set[str] = {
     "set_reminder", "cancel_reminder", "cancel_all_reminders",
     "list_reminders", "create_event", "send_message",
 }
+
+_ASSISTANT_FINALIZE_DEBOUNCE_SECONDS = 1.8
+_TOOL_FALLBACK_TIMEOUT_SECONDS = 4.0
+_TOOL_FALLBACK_FINALIZE_GRACE_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -428,6 +433,13 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
     audio_context_sent = False
     finalize_timer: asyncio.Task | None = None
     assistant_has_audio: bool = False
+    last_assistant_activity_at = 0.0
+    pending_tool_name: str | None = None
+    pending_tool_args: dict = {}
+    got_audio_after_tool = False
+    turn_complete_count = 0
+    already_nudged = False
+    fallback_summary_pending = False
 
     async def send_client(payload: dict) -> None:
         payload.setdefault("conversation_id", turn_controller.conversation_id)
@@ -476,7 +488,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         return turn_id
 
     async def cancel_assistant_turn(reason: str) -> None:
-        nonlocal duck_timer_task, ducked_assistant_turn_id, finalize_timer, assistant_has_audio
+        nonlocal duck_timer_task, ducked_assistant_turn_id, finalize_timer
+        nonlocal assistant_has_audio, fallback_summary_pending
         if finalize_timer:
             finalize_timer.cancel()
             finalize_timer = None
@@ -485,6 +498,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             duck_timer_task = None
         ducked_assistant_turn_id = None
         assistant_has_audio = False
+        fallback_summary_pending = False
         snapshot = turn_controller.cancel_assistant_turn()
         if not snapshot:
             return
@@ -507,7 +521,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         )
 
     async def finalize_assistant_turn(status: str = "completed") -> None:
-        nonlocal duck_timer_task, ducked_assistant_turn_id, finalize_timer, assistant_has_audio
+        nonlocal duck_timer_task, ducked_assistant_turn_id, finalize_timer
+        nonlocal assistant_has_audio, fallback_summary_pending
         if finalize_timer:
             finalize_timer.cancel()
             finalize_timer = None
@@ -516,6 +531,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             duck_timer_task = None
         ducked_assistant_turn_id = None
         assistant_has_audio = False
+        fallback_summary_pending = False
         snapshot = turn_controller.complete_assistant_turn()
         if not snapshot:
             return
@@ -542,14 +558,28 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             finalize_timer.cancel()
             finalize_timer = None
 
-    def _schedule_finalize() -> None:
+    def _mark_assistant_activity() -> None:
+        nonlocal last_assistant_activity_at
+        last_assistant_activity_at = time.monotonic()
+        _cancel_finalize_timer()
+
+    def _schedule_finalize(
+        delay_seconds: float = _ASSISTANT_FINALIZE_DEBOUNCE_SECONDS,
+    ) -> None:
         nonlocal finalize_timer
         _cancel_finalize_timer()
 
         async def _delayed_finalize():
             nonlocal finalize_timer
             try:
-                await asyncio.sleep(0.8)
+                await asyncio.sleep(delay_seconds)
+                if pending_tool_name:
+                    return
+                if (
+                    turn_controller.current_assistant_turn_id
+                    and time.monotonic() - last_assistant_activity_at < delay_seconds
+                ):
+                    return
                 await finalize_assistant_turn()
             except asyncio.CancelledError:
                 pass
@@ -617,13 +647,11 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
     )
 
     async def forward_agent_events():
-        pending_tool_name: str | None = None
-        pending_tool_args: dict = {}
-        got_audio_after_tool = False
-        turn_complete_count = 0
-        already_nudged = False
         _fallback_task: asyncio.Task | None = None
         nonlocal assistant_has_audio
+        nonlocal pending_tool_name, pending_tool_args
+        nonlocal got_audio_after_tool, turn_complete_count
+        nonlocal already_nudged, fallback_summary_pending
         session_token = set_active_session(session_id)
         user_token = set_active_user(user_id)
 
@@ -643,6 +671,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                     got_audio_after_tool = False
                     turn_complete_count = 0
                     already_nudged = False
+                    fallback_summary_pending = False
                     if _fallback_task:
                         _fallback_task.cancel()
                         _fallback_task = None
@@ -663,6 +692,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             pending_tool_args = {}
                             got_audio_after_tool = False
                             turn_complete_count = 0
+                            fallback_summary_pending = False
                         else:
                             await send_assistant_duck("user_onset")
 
@@ -685,6 +715,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                     output_texts = []
 
                 for text in output_texts:
+                    _mark_assistant_activity()
                     turn_id = await ensure_assistant_turn_started()
                     snapshot = turn_controller.update_assistant_partial(text)
                     await send_client(
@@ -708,6 +739,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 continue
 
                             _cancel_finalize_timer()
+                            _mark_assistant_activity()
                             turn_id = await ensure_assistant_turn_started()
                             pending_tool_name = part.function_call.name
                             pending_tool_args = (
@@ -717,6 +749,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             )
                             got_audio_after_tool = False
                             turn_complete_count = 0
+                            fallback_summary_pending = False
                             await send_client(
                                 {
                                     "type": "tool_call",
@@ -738,6 +771,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 continue
 
                             _cancel_finalize_timer()
+                            _mark_assistant_activity()
                             assistant_has_audio = True
                             turn_id = await ensure_assistant_turn_started()
                             await send_client(
@@ -752,6 +786,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 }
                             )
                             got_audio_after_tool = True
+                            fallback_summary_pending = False
                             if _fallback_task:
                                 _fallback_task.cancel()
                                 _fallback_task = None
@@ -769,6 +804,7 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 logger.debug("Dropping blocked assistant text")
                                 continue
 
+                            _mark_assistant_activity()
                             turn_id = await ensure_assistant_turn_started()
                             snapshot = turn_controller.update_assistant_partial(
                                 part.text
@@ -805,8 +841,9 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             nonlocal pending_tool_name, pending_tool_args
                             nonlocal got_audio_after_tool, turn_complete_count
                             nonlocal already_nudged, _fallback_task
+                            nonlocal fallback_summary_pending
                             try:
-                                await asyncio.sleep(4.0)
+                                await asyncio.sleep(_TOOL_FALLBACK_TIMEOUT_SECONDS)
                             except asyncio.CancelledError:
                                 return
                             # Double-check audio didn't arrive while sleeping
@@ -845,8 +882,11 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                         "role": snapshot.role,
                                         "text": snapshot.text,
                                     })
-                                    turn_controller.block_assistant_output(1.5)
-                                    await finalize_assistant_turn()
+                                    _mark_assistant_activity()
+                                    fallback_summary_pending = True
+                                    _schedule_finalize(
+                                        _TOOL_FALLBACK_FINALIZE_GRACE_SECONDS
+                                    )
                             else:
                                 logger.info(
                                     "FALLBACK: Skipping re-execution of state-mutating tool %s",
@@ -873,6 +913,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                         # Audio was sent in this turn -- debounce finalization
                         # to avoid splitting a single response into multiple turns
                         _schedule_finalize()
+                    elif fallback_summary_pending:
+                        _schedule_finalize(_TOOL_FALLBACK_FINALIZE_GRACE_SECONDS)
                     else:
                         await finalize_assistant_turn()
 
