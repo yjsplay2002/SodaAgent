@@ -29,6 +29,87 @@ SodaAgent is an always-on voice assistant for drivers, powered by Google's Gemin
 - **Proactive outbound calls**: Agent calls you via Twilio when calendar events approach
 - **Always-on connection** with automatic session resumption
 
+## Reproducible Testing
+
+If you are judging the project, use the following paths.
+
+### Fastest path: hosted demo
+
+- Web app: [https://sodaagent.web.app](https://sodaagent.web.app)
+- Backend health check: [https://soda-agent-xn3v7zelza-uc.a.run.app/health](https://soda-agent-xn3v7zelza-uc.a.run.app/health)
+- Backend root: [https://soda-agent-xn3v7zelza-uc.a.run.app/](https://soda-agent-xn3v7zelza-uc.a.run.app/)
+
+Quick manual smoke test:
+
+1. Open the hosted web app and sign in with Google.
+2. Tap the orb to connect to the live backend.
+3. Say or type `What's the weather in Seoul today?`
+4. Confirm that a transcript appears and the assistant responds.
+5. Open the session history button and confirm the conversation was saved.
+
+### Reproducible local automated test
+
+These tests run locally and do not require Twilio credentials, Firebase credentials, or a live Gemini session.
+
+```bash
+cd backend
+python -m venv .venv
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+# source .venv/bin/activate
+
+pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+Expected result:
+
+- `Ran 27 tests`
+- Final line is `OK`
+
+Coverage of the automated suite:
+
+- Conversation/session persistence
+- Location-aware weather and navigation tool behavior
+- Trigger engine behavior for live-session nudges vs. Twilio phone calls
+- User profile and phone-number normalization
+- WebSocket one-time ticket issuance/expiry
+- Claude Code workspace guardrails
+
+### Optional local backend smoke test
+
+If you want to run the backend locally instead of using the hosted deployment:
+
+```bash
+cd backend
+python -m venv .venv
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+# source .venv/bin/activate
+
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+Then verify:
+
+1. `http://localhost:8080/health` returns `{"status":"healthy"}`.
+2. `http://localhost:8080/ready` returns `{"status":"ready"}`.
+3. `http://localhost:8080/` returns the service metadata JSON.
+
+Notes:
+
+- The Flutter client defaults to the hosted Cloud Run backend in `mobile/lib/screens/home_screen.dart`.
+- For the full end-to-end UI demo, use the hosted web app above because it already has Firebase Auth configured.
+- Google sign-in is required for the full mobile/web product flow because authenticated sessions are backed by Firebase Auth.
+- When running a Flutter app from this repo, use a `release` build by default.
+
 ## Tech Stack
 
 | Component | Technology |
