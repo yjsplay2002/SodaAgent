@@ -17,9 +17,9 @@ from twilio.rest import Client
 
 logger = logging.getLogger(__name__)
 
-_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
-_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
-_FROM_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
+_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID") or os.environ.get("TWILIO_SID", "")
+_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN") or os.environ.get("TWILIO_CREDENTIAL", "")
+_FROM_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER") or os.environ.get("TWILIO_CALLER", "")
 _USER_NUMBER = os.environ.get("USER_PHONE_NUMBER", "")
 
 _client: Client | None = None

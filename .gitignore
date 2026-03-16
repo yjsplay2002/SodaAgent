@@ -62,3 +62,6 @@ mobile/ios/Runner/GoogleService-Info.plist
 .claude/
 .sisyphus/
 .venv
+
+# Firebase
+.firebase/

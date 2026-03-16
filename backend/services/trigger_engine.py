@@ -35,6 +35,7 @@ except ModuleNotFoundError:
 
 from services.twilio_service import TwilioService
 from services.user_markdown_store import user_markdown_store
+from services.user_profile_service import user_profile_service
 from services.ws_registry import ws_registry
 
 logger = logging.getLogger(__name__)
@@ -128,8 +129,12 @@ class TriggerEngine:
         channel = result["channel"]
 
         if result["status"] != "success":
+            resolved_phone_number = (
+                (todo.get("schedule") or {}).get("phone_number")
+                or user_profile_service.get_phone_number(user_id)
+            )
             result = self.twilio.initiate_message_call(
-                to_number=(todo.get("schedule") or {}).get("phone_number"),
+                to_number=resolved_phone_number,
                 message=message,
                 call_id=str(uuid.uuid4()),
             )

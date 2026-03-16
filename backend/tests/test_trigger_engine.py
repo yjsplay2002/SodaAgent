@@ -76,7 +76,6 @@ class TriggerEngineTest(unittest.TestCase):
             title="Pay rent",
             details="before noon",
             cron="* * * * *",
-            phone_number="+15551234567",
             schedule_timezone="UTC",
         )
         created_at = datetime.fromisoformat(todo["created_at"])
@@ -94,6 +93,9 @@ class TriggerEngineTest(unittest.TestCase):
 
         with patch("services.trigger_engine.user_markdown_store", self.store), patch(
             "services.trigger_engine.ws_registry", self.registry
+        ), patch(
+            "services.trigger_engine.user_profile_service.get_phone_number",
+            return_value="+15551234567",
         ):
             results = asyncio.run(engine.evaluate_triggers(self.user_id, now=due_time))
 

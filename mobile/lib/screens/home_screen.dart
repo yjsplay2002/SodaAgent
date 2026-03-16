@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/theme.dart';
 import '../services/auth_service.dart';
+import '../services/backend_user_profile_service.dart';
 import '../services/document_export_service.dart';
 import '../services/session_catalog_service.dart';
 import '../services/voice_session.dart';
@@ -176,6 +177,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 tooltip: 'Export conversation',
               ),
               IconButton(
+                onPressed: _showPhoneSettingsSheet,
+                icon: const Icon(Icons.call_rounded, color: Colors.white),
+                tooltip: 'Call number',
+              ),
+              IconButton(
                 onPressed: _showConversationSheet,
                 icon: const Icon(Icons.history_rounded, color: Colors.white),
                 tooltip: 'Sessions',
@@ -347,6 +353,195 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _showPhoneSettingsSheet() async {
+    final profileService = ref.read(backendUserProfileServiceProvider);
+    final authService = ref.read(authServiceProvider);
+
+    BackendUserProfile profile;
+    try {
+      profile = await profileService.fetchProfile(_defaultServerUrl);
+    } on AuthException catch (error) {
+      if (!mounted) return;
+      _showSnackBar(error.message);
+      return;
+    } catch (_) {
+      if (!mounted) return;
+      _showSnackBar('Failed to load your call number.');
+      return;
+    }
+
+    if (!mounted) return;
+
+    final controller = TextEditingController(
+      text: profile.phoneNumber ?? authService.currentUser?.phoneNumber ?? '',
+    );
+    var errorText = '';
+    var isSaving = false;
+
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: const Color(0xFF11161D),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        builder: (sheetContext) {
+          return StatefulBuilder(
+            builder: (context, setSheetState) {
+              final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+              return SafeArea(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(20, 16, 20, bottomInset + 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Call Number',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Twilio will call this number when a scheduled todo fires and you are disconnected.',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.68),
+                          height: 1.4,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: controller,
+                        keyboardType: TextInputType.phone,
+                        enabled: !isSaving,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Phone number',
+                          labelStyle: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.65),
+                          ),
+                          hintText: '+821012345678',
+                          hintStyle: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.3),
+                          ),
+                          filled: true,
+                          fillColor: Colors.white.withValues(alpha: 0.08),
+                          errorText: errorText.isEmpty ? null : errorText,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Use international format with country code. Example: +821012345678',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.45),
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      Row(
+                        children: [
+                          if ((profile.phoneNumber ?? '').isNotEmpty)
+                            TextButton(
+                              onPressed: isSaving
+                                  ? null
+                                  : () async {
+                                      setSheetState(() {
+                                        isSaving = true;
+                                        errorText = '';
+                                      });
+                                      try {
+                                        await profileService.updatePhoneNumber(
+                                          _defaultServerUrl,
+                                          phoneNumber: '',
+                                        );
+                                        if (!mounted) return;
+                                        Navigator.of(sheetContext).pop();
+                                        _showSnackBar('Call number removed.');
+                                      } on AuthException catch (error) {
+                                        setSheetState(() {
+                                          errorText = error.message;
+                                        });
+                                      } finally {
+                                        if (sheetContext.mounted) {
+                                          setSheetState(() {
+                                            isSaving = false;
+                                          });
+                                        }
+                                      }
+                                    },
+                              child: const Text('Clear'),
+                            ),
+                          const Spacer(),
+                          FilledButton(
+                            onPressed: isSaving
+                                ? null
+                                : () async {
+                                    setSheetState(() {
+                                      isSaving = true;
+                                      errorText = '';
+                                    });
+                                    try {
+                                      final updated =
+                                          await profileService.updatePhoneNumber(
+                                            _defaultServerUrl,
+                                            phoneNumber: controller.text.trim(),
+                                          );
+                                      if (!mounted) return;
+                                      Navigator.of(sheetContext).pop();
+                                      _showSnackBar(
+                                        updated.phoneNumber == null
+                                            ? 'Call number removed.'
+                                            : 'Twilio calls will go to ${updated.phoneNumber}.',
+                                      );
+                                    } on AuthException catch (error) {
+                                      setSheetState(() {
+                                        errorText = error.message;
+                                      });
+                                    } catch (_) {
+                                      setSheetState(() {
+                                        errorText = 'Failed to save your call number.';
+                                      });
+                                    } finally {
+                                      if (sheetContext.mounted) {
+                                        setSheetState(() {
+                                          isSaving = false;
+                                        });
+                                      }
+                                    }
+                                  },
+                            child: isSaving
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text('Save'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      controller.dispose();
+    }
   }
 
   Future<void> _saveResponse(

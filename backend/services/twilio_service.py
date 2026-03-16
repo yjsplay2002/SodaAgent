@@ -15,9 +15,9 @@ class TwilioService:
     """Manages outbound PSTN calls via Twilio."""
 
     def __init__(self):
-        self.account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-        self.auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-        self.from_number = os.getenv("TWILIO_PHONE_NUMBER")
+        self.account_sid = os.getenv("TWILIO_ACCOUNT_SID") or os.getenv("TWILIO_SID")
+        self.auth_token = os.getenv("TWILIO_AUTH_TOKEN") or os.getenv("TWILIO_CREDENTIAL")
+        self.from_number = os.getenv("TWILIO_PHONE_NUMBER") or os.getenv("TWILIO_CALLER")
         self.default_user_number = os.getenv("USER_PHONE_NUMBER")
         self.backend_url = os.getenv("BACKEND_URL", "https://soda-agent.run.app")
         self.client = (

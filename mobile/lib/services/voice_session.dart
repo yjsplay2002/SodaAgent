@@ -267,9 +267,11 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   }
 
   Future<void> _startMicStream() async {
-    await _sendLocationContext();
     final started = await _audio.startRecording();
     if (started) {
+      // Keep the mic start path as close to the tap gesture as possible on web.
+      // Location context can lag a bit without affecting the conversation.
+      unawaited(_sendLocationContext());
       _micSub?.cancel();
       _micSub = _audio.audioStream.listen((chunk) {
         _handleLocalBargeIn(chunk);
