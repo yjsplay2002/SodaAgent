@@ -26,6 +26,7 @@ from services.live_tool_context import (
     set_session_location,
 )
 from services.ws_registry import ws_registry
+from services.conversation_store import conversation_store
 from services.session_manager import session_service
 from services.turn_controller import TurnController
 from soda_agent.agent import live_agent
@@ -412,14 +413,13 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
     await websocket.accept()
     logger.info("Mobile client connected: user=%s", user_id)
 
-    session = await session_service.create_session(
-        app_name=APP_NAME, user_id=user_id
-    )
-    session_id = session.id
-    logger.info("Session created: %s", session_id)
-
     requested_conversation_id = websocket.query_params.get("conversation_id")
-    live_queue = LiveRequestQueue()
+    preferred_conversation_id = requested_conversation_id
+    session = None
+    session_id: str | None = None
+    live_queue: LiveRequestQueue | None = None
+    bound_record = None
+    session_bound = asyncio.Event()
     turn_controller = (
         TurnController(conversation_id=requested_conversation_id)
         if requested_conversation_id
@@ -442,12 +442,12 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
     fallback_summary_pending = False
 
     async def send_client(payload: dict) -> None:
-        payload.setdefault("conversation_id", turn_controller.conversation_id)
+        if bound_record:
+            payload.setdefault("conversation_id", bound_record.conversation_id)
+        elif preferred_conversation_id:
+            payload.setdefault("conversation_id", preferred_conversation_id)
         async with send_lock:
             await websocket.send_json(payload)
-
-    # Register connection in the global WebSocket registry for proactive messaging
-    ws_registry.register(user_id=user_id, send_fn=send_client, live_queue=live_queue)
 
     async def commit_user_turn_if_needed() -> str | None:
         snapshot = turn_controller.commit_user_turn()
@@ -470,6 +470,15 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                 "status": "completed",
             }
         )
+        if bound_record:
+            conversation_store.append_turn(
+                user_id,
+                bound_record.conversation_id,
+                turn_id=snapshot.turn_id,
+                role=snapshot.role,
+                text=snapshot.text,
+                status="completed",
+            )
         return snapshot.turn_id
 
     async def ensure_assistant_turn_started() -> str:
@@ -519,6 +528,15 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                 "status": "cancelled",
             }
         )
+        if bound_record:
+            conversation_store.append_turn(
+                user_id,
+                bound_record.conversation_id,
+                turn_id=snapshot.turn_id,
+                role=snapshot.role,
+                text=snapshot.text,
+                status="cancelled",
+            )
 
     async def finalize_assistant_turn(status: str = "completed") -> None:
         nonlocal duck_timer_task, ducked_assistant_turn_id, finalize_timer
@@ -551,6 +569,15 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                 "status": status,
             }
         )
+        if bound_record:
+            conversation_store.append_turn(
+                user_id,
+                bound_record.conversation_id,
+                turn_id=snapshot.turn_id,
+                role=snapshot.role,
+                text=snapshot.text,
+                status=status,
+            )
 
     def _cancel_finalize_timer() -> None:
         nonlocal finalize_timer
@@ -646,16 +673,109 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         ),
     )
 
+    async def bind_conversation_for_resolution(resolution) -> None:
+        nonlocal session, session_id, live_queue, turn_controller, bound_record
+        record = resolution.record
+
+        if bound_record and bound_record.conversation_id == record.conversation_id:
+            return
+
+        if record.adk_session is not None and record.adk_session_id:
+            session = record.adk_session
+            session_id = record.adk_session_id
+            conversation_store.bind_adk_session(
+                user_id,
+                record.conversation_id,
+                adk_session=session,
+                adk_session_id=session_id,
+            )
+            logger.info(
+                "Resumed session: user=%s conversation=%s session=%s reason=%s",
+                user_id,
+                record.conversation_id,
+                session_id,
+                resolution.reason,
+            )
+        else:
+            session = await session_service.create_session(
+                app_name=APP_NAME,
+                user_id=user_id,
+            )
+            session_id = session.id
+            conversation_store.bind_adk_session(
+                user_id,
+                record.conversation_id,
+                adk_session=session,
+                adk_session_id=session_id,
+            )
+            logger.info(
+                "Session created: user=%s conversation=%s session=%s reason=%s",
+                user_id,
+                record.conversation_id,
+                session_id,
+                resolution.reason,
+            )
+
+        bound_record = conversation_store.get_record(user_id, record.conversation_id) or record
+        live_queue = LiveRequestQueue()
+        turn_controller = TurnController(conversation_id=record.conversation_id)
+        if client_context and session_id:
+            set_session_location(
+                session_id,
+                client_context.latitude,
+                client_context.longitude,
+            )
+        ws_registry.register(
+            user_id=user_id,
+            send_fn=send_client,
+            live_queue=live_queue,
+        )
+        session_bound.set()
+        await send_client(
+            {
+                "type": "session_ready",
+                "session_id": session_id,
+                "conversation_id": record.conversation_id,
+                "title": record.title,
+                "resumed": resolution.reused,
+                "reason": resolution.reason,
+            }
+        )
+
+    async def ensure_conversation_bound_for_text(text: str) -> None:
+        if bound_record:
+            return
+        resolution = conversation_store.resolve_for_text(
+            user_id=user_id,
+            text=text,
+            preferred_conversation_id=preferred_conversation_id,
+        )
+        await bind_conversation_for_resolution(resolution)
+
+    async def ensure_conversation_bound_for_audio() -> None:
+        if bound_record:
+            return
+        resolution = conversation_store.resolve_for_audio(
+            user_id=user_id,
+            preferred_conversation_id=preferred_conversation_id,
+        )
+        await bind_conversation_for_resolution(resolution)
+
     async def forward_agent_events():
         _fallback_task: asyncio.Task | None = None
         nonlocal assistant_has_audio
         nonlocal pending_tool_name, pending_tool_args
         nonlocal got_audio_after_tool, turn_complete_count
         nonlocal already_nudged, fallback_summary_pending
-        session_token = set_active_session(session_id)
-        user_token = set_active_user(user_id)
+        session_token = None
+        user_token = None
 
         try:
+            await session_bound.wait()
+            if session is None or live_queue is None or session_id is None:
+                return
+            session_token = set_active_session(session_id)
+            user_token = set_active_user(user_id)
             async for event in runner.run_live(
                 session=session,
                 live_request_queue=live_queue,
@@ -747,6 +867,12 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                                 if part.function_call.args
                                 else {}
                             )
+                            if bound_record:
+                                conversation_store.record_tool_use(
+                                    user_id,
+                                    bound_record.conversation_id,
+                                    pending_tool_name,
+                                )
                             got_audio_after_tool = False
                             turn_complete_count = 0
                             fallback_summary_pending = False
@@ -928,8 +1054,10 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             if _fallback_task:
                 _fallback_task.cancel()
                 _fallback_task = None
-            reset_active_session(session_token)
-            reset_active_user(user_token)
+            if session_token is not None:
+                reset_active_session(session_token)
+            if user_token is not None:
+                reset_active_user(user_token)
 
     async def process_client_messages():
         try:
@@ -939,6 +1067,9 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                 msg_type = msg.get("type", "")
 
                 if msg_type in {"audio", "audio_chunk"}:
+                    await ensure_conversation_bound_for_audio()
+                    if live_queue is None:
+                        continue
                     if client_context and not audio_context_sent:
                         live_queue.send(
                             LiveRequest(
@@ -967,13 +1098,13 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
 
                 if msg_type == "context_update":
                     client_context = _normalize_client_context(msg.get("context"))
-                    if client_context:
+                    if client_context and session_id:
                         set_session_location(
                             session_id,
                             client_context.latitude,
                             client_context.longitude,
                         )
-                    else:
+                    elif session_id:
                         clear_session_location(session_id)
                     if turn_controller.current_user_turn_id is None:
                         audio_context_sent = False
@@ -984,6 +1115,9 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                     if not text:
                         continue
 
+                    await ensure_conversation_bound_for_text(text)
+                    if live_queue is None or bound_record is None:
+                        continue
                     if turn_controller.current_assistant_turn_id:
                         await cancel_assistant_turn("text_override")
 
@@ -1005,6 +1139,14 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                             "status": "completed",
                         }
                     )
+                    conversation_store.append_turn(
+                        user_id,
+                        bound_record.conversation_id,
+                        turn_id=snapshot.turn_id,
+                        role=snapshot.role,
+                        text=snapshot.text,
+                        status="completed",
+                    )
                     live_queue.send(
                         LiveRequest(
                             content=types.Content(
@@ -1025,7 +1167,8 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
                     continue
 
                 if msg_type == "end_turn":
-                    live_queue.send(LiveRequest(end_of_turn=True))
+                    if live_queue is not None:
+                        live_queue.send(LiveRequest(end_of_turn=True))
                     audio_context_sent = False
 
         except WebSocketDisconnect:
@@ -1033,19 +1176,13 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
         except Exception as exc:
             logger.exception("Client message error: %s", exc)
 
+    forward_task = asyncio.create_task(forward_agent_events())
+    process_task = asyncio.create_task(process_client_messages())
+
     try:
-        await send_client(
-            {
-                "type": "session_ready",
-                "session_id": session_id,
-            }
-        )
-        tasks = [
-            asyncio.create_task(forward_agent_events()),
-            asyncio.create_task(process_client_messages()),
-        ]
         done, pending = await asyncio.wait(
-            tasks, return_when=asyncio.FIRST_COMPLETED
+            [forward_task, process_task],
+            return_when=asyncio.FIRST_COMPLETED,
         )
         for task in pending:
             task.cancel()
@@ -1057,7 +1194,20 @@ async def mobile_voice_stream(websocket: WebSocket, user_id: str):
             finalize_timer.cancel()
         if duck_timer_task:
             duck_timer_task.cancel()
-        clear_session_location(session_id)
+        if session_id:
+            clear_session_location(session_id)
         ws_registry.unregister(user_id)
-        live_queue.close()
-        logger.info("Session ended: user=%s session=%s", user_id, session_id)
+        if forward_task:
+            forward_task.cancel()
+        if process_task:
+            process_task.cancel()
+        if live_queue:
+            live_queue.close()
+        if bound_record:
+            conversation_store.mark_inactive(user_id, bound_record.conversation_id)
+        logger.info(
+            "Session ended: user=%s conversation=%s session=%s",
+            user_id,
+            bound_record.conversation_id if bound_record else None,
+            session_id,
+        )

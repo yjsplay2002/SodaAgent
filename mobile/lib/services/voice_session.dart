@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'audio_service.dart';
 import 'location_service.dart';
 import 'local_identity_service.dart';
+import 'session_catalog_service.dart';
 import 'websocket_service.dart';
 
 enum VoiceState { idle, listening, thinking, speaking }
@@ -25,6 +27,9 @@ class VoiceSessionState {
   final String? activeUserTurnId;
   final String? activeAssistantTurnId;
   final bool isAssistantDucked;
+  final List<ConversationSummary> conversations;
+  final bool conversationsLoading;
+  final String? conversationsError;
 
   const VoiceSessionState({
     this.voiceState = VoiceState.idle,
@@ -38,6 +43,9 @@ class VoiceSessionState {
     this.activeUserTurnId,
     this.activeAssistantTurnId,
     this.isAssistantDucked = false,
+    this.conversations = const [],
+    this.conversationsLoading = false,
+    this.conversationsError,
   });
 
   VoiceSessionState copyWith({
@@ -52,6 +60,9 @@ class VoiceSessionState {
     Object? activeUserTurnId = _noChange,
     Object? activeAssistantTurnId = _noChange,
     bool? isAssistantDucked,
+    List<ConversationSummary>? conversations,
+    bool? conversationsLoading,
+    Object? conversationsError = _noChange,
   }) => VoiceSessionState(
     voiceState: voiceState ?? this.voiceState,
     connectionState: connectionState ?? this.connectionState,
@@ -74,6 +85,11 @@ class VoiceSessionState {
         ? this.activeAssistantTurnId
         : activeAssistantTurnId as String?,
     isAssistantDucked: isAssistantDucked ?? this.isAssistantDucked,
+    conversations: conversations ?? this.conversations,
+    conversationsLoading: conversationsLoading ?? this.conversationsLoading,
+    conversationsError: identical(conversationsError, _noChange)
+        ? this.conversationsError
+        : conversationsError as String?,
   );
 }
 
@@ -135,12 +151,15 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   int _localSilenceChunkStreak = 0;
   bool _localAssistantDuckActive = false;
   bool _serverUserSpeechDetected = false;
+  String? _serverUrl;
+  String? _userId;
 
   VoiceSessionNotifier(this._ws, this._ref) : super(const VoiceSessionState()) {
     _stateSub = _ws.stateStream.listen((s) {
       state = state.copyWith(connectionState: s);
       if (s == WsConnectionState.connected) {
         unawaited(_sendLocationContext());
+        unawaited(refreshSessions());
       }
     });
 
@@ -151,22 +170,87 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
 
   LocalIdentityService get _identity => _ref.read(localIdentityServiceProvider);
   LocationService get _location => _ref.read(locationServiceProvider);
+  SessionCatalogService get _catalog => _ref.read(sessionCatalogServiceProvider);
 
   Future<void> connect(String serverUrl) async {
-    final userId = await _identity.getOrCreateUserId();
+    _serverUrl = serverUrl;
+    _userId = await _identity.getOrCreateUserId();
     final conversationId =
         state.conversationId ?? await _identity.getConversationId();
     final wsUrl = serverUrl
         .replaceFirst('https://', 'wss://')
         .replaceFirst('http://', 'ws://');
-    final uri = Uri.parse('$wsUrl/ws/mobile/$userId').replace(
+    final uri = Uri.parse('$wsUrl/ws/mobile/$_userId').replace(
       queryParameters: {
         if (conversationId != null && conversationId.isNotEmpty)
           'conversation_id': conversationId,
       },
     );
     _ws.connect(uri.toString());
-    state = state.copyWith(conversationId: conversationId);
+    state = state.copyWith(
+      conversationId: conversationId,
+      conversationsError: null,
+    );
+  }
+
+  Future<void> refreshSessions([String? serverUrlOverride]) async {
+    final serverUrl = serverUrlOverride ?? _serverUrl;
+    if (serverUrlOverride != null) {
+      _serverUrl = serverUrlOverride;
+    }
+    final userId = _userId ?? await _identity.getOrCreateUserId();
+    _userId = userId;
+    if (serverUrl == null || serverUrl.isEmpty) {
+      return;
+    }
+
+    state = state.copyWith(
+      conversationsLoading: true,
+      conversationsError: null,
+    );
+    try {
+      final sessions = await _catalog.fetchSessions(serverUrl, userId);
+      state = state.copyWith(
+        conversations: sessions,
+        conversationsLoading: false,
+      );
+    } catch (error) {
+      state = state.copyWith(
+        conversationsLoading: false,
+        conversationsError: error.toString(),
+      );
+    }
+  }
+
+  Future<void> selectConversation(ConversationSummary? summary) async {
+    final conversationId = summary?.conversationId;
+    await _identity.saveConversationId(conversationId);
+
+    if (summary == null) {
+      state = state.copyWith(
+        conversationId: null,
+        transcripts: const [],
+        activeUserTurnId: null,
+        activeAssistantTurnId: null,
+        currentToolCall: null,
+      );
+    } else {
+      final detail = await _loadConversationDetail(conversationId);
+      state = state.copyWith(
+        conversationId: conversationId,
+        transcripts:
+            detail?.turns.map(_transcriptFromTurn).toList() ?? const [],
+        activeUserTurnId: null,
+        activeAssistantTurnId: null,
+        currentToolCall: null,
+      );
+    }
+
+    if (_serverUrl != null &&
+        state.connectionState != WsConnectionState.disconnected) {
+      disconnect();
+      await connect(_serverUrl!);
+    }
   }
 
   Future<void> _startMicStream() async {
@@ -247,6 +331,30 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
     }
 
     _ws.sendContextUpdate(context);
+  }
+
+  Future<ConversationDetail?> _loadConversationDetail(
+    String? conversationId,
+  ) async {
+    final serverUrl = _serverUrl;
+    final userId = _userId ?? await _identity.getOrCreateUserId();
+    _userId = userId;
+    if (serverUrl == null || conversationId == null || conversationId.isEmpty) {
+      return null;
+    }
+
+    return _catalog.fetchConversation(serverUrl, userId, conversationId);
+  }
+
+  TranscriptEntry _transcriptFromTurn(ConversationTurnData turn) {
+    return TranscriptEntry(
+      turnId: turn.turnId,
+      role: turn.role,
+      text: turn.text,
+      timestamp: turn.createdAt,
+      isFinal: turn.isFinal,
+      isInterrupted: turn.status == 'cancelled',
+    );
   }
 
   void playAudio(String path) {
@@ -554,8 +662,29 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
   void _handleMessage(WsMessage msg) {
     switch (msg.type) {
       case 'session_ready':
-        state = state.copyWith(conversationId: msg.conversationId);
+        final previousConversationId = state.conversationId;
+        final nextConversationId = msg.conversationId;
+        final shouldResetTranscripts = nextConversationId != null &&
+            previousConversationId != null &&
+            previousConversationId != nextConversationId;
+        state = state.copyWith(
+          conversationId: nextConversationId,
+          transcripts: shouldResetTranscripts ? const [] : state.transcripts,
+        );
         _identity.saveConversationId(msg.conversationId);
+        unawaited(refreshSessions());
+        if ((shouldResetTranscripts || state.transcripts.isEmpty) &&
+            nextConversationId != null) {
+          unawaited(() async {
+            final detail = await _loadConversationDetail(nextConversationId);
+            if (detail == null || state.conversationId != nextConversationId) {
+              return;
+            }
+            state = state.copyWith(
+              transcripts: detail.turns.map(_transcriptFromTurn).toList(),
+            );
+          }());
+        }
 
       case 'turn_started':
         if (msg.role == 'assistant' && msg.turnId != null) {
@@ -587,12 +716,16 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
           activeUserTurnId: msg.role == 'user'
               ? msg.turnId
               : state.activeUserTurnId,
-          activeAssistantTurnId: msg.role == 'assistant' || msg.role == 'model'
+          activeAssistantTurnId:
+              msg.role == 'assistant' || msg.role == 'model'
               ? msg.turnId
               : state.activeAssistantTurnId,
           voiceState: msg.role == 'user'
               ? VoiceState.listening
               : VoiceState.speaking,
+          isUserSpeechDetected: msg.role == 'user',
+          voiceState:
+              msg.role == 'user' ? VoiceState.listening : VoiceState.speaking,
           isUserSpeechDetected: msg.role == 'user',
           isAssistantDucked: false,
         );
@@ -618,9 +751,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
                   state.activeAssistantTurnId == msg.turnId
               ? null
               : state.activeAssistantTurnId,
-          voiceState: msg.role == 'user'
-              ? VoiceState.thinking
-              : VoiceState.speaking,
+          voiceState:
+              msg.role == 'user' ? VoiceState.thinking : VoiceState.speaking,
           isUserSpeechDetected: false,
           isAssistantDucked: false,
         );
@@ -698,9 +830,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
           activeAssistantTurnId: state.activeAssistantTurnId == turnId
               ? null
               : state.activeAssistantTurnId,
-          voiceState: state.micAvailable
-              ? VoiceState.listening
-              : VoiceState.idle,
+          voiceState:
+              state.micAvailable ? VoiceState.listening : VoiceState.idle,
           currentToolCall: null,
           isUserSpeechDetected: false,
           isAssistantDucked: false,
@@ -724,6 +855,7 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
           'VoiceSession: Turn committed turn=$turnId role=${msg.role} '
           'status=${msg.status}',
         );
+        unawaited(refreshSessions());
         if (msg.role == 'assistant') {
           _resetLocalBargeInDetection(restorePlayback: false);
           _closedAssistantTurns.add(turnId);
@@ -737,9 +869,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
             activeAssistantTurnId: state.activeAssistantTurnId == turnId
                 ? null
                 : state.activeAssistantTurnId,
-            voiceState: state.micAvailable
-                ? VoiceState.listening
-                : VoiceState.idle,
+            voiceState:
+                state.micAvailable ? VoiceState.listening : VoiceState.idle,
             currentToolCall: null,
             isUserSpeechDetected: false,
             isAssistantDucked: false,
@@ -776,9 +907,8 @@ class VoiceSessionNotifier extends StateNotifier<VoiceSessionState> {
         ];
         state = state.copyWith(
           transcripts: errorTranscripts,
-          voiceState: state.micAvailable
-              ? VoiceState.listening
-              : VoiceState.idle,
+          voiceState:
+              state.micAvailable ? VoiceState.listening : VoiceState.idle,
           isUserSpeechDetected: false,
           isAssistantDucked: false,
         );

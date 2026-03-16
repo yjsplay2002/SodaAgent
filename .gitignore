@@ -50,6 +50,7 @@ infrastructure/terraform/.terraform.lock.hcl
 *.key
 credentials.json
 service-account.json
+.gcloud-config/
 
 # ADK local session data
 .adk/

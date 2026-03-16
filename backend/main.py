@@ -16,6 +16,7 @@ if os.getenv("GOOGLE_API_KEY") and not os.getenv("GOOGLE_GENAI_USE_VERTEXAI"):
 
 from routers.health import router as health_router
 from routers.claude_code import router as claude_code_router
+from routers.sessions import router as sessions_router
 from routers.ws_mobile import router as ws_mobile_router
 from services.scheduler_service import scheduler_service
 
@@ -37,6 +38,7 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(claude_code_router)
+app.include_router(sessions_router)
 app.include_router(ws_mobile_router)
 
 
