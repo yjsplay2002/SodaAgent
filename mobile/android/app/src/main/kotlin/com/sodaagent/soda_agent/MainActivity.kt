@@ -16,6 +16,8 @@ class MainActivity : FlutterActivity() {
     private var pendingPermissionResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+
         if (!flutterEngine.plugins.has(FlutterSound::class.java)) {
             flutterEngine.plugins.add(FlutterSound())
         }

@@ -46,7 +46,7 @@ class FirebaseSetupScreen extends StatelessWidget {
                     if (missingKeys.isNotEmpty) ...[
                       const SizedBox(height: 20),
                       Text(
-                        'Missing dart-defines',
+                        'Missing Firebase values',
                         style: TextStyle(
                           color: Colors.white.withValues(alpha: 0.72),
                           fontWeight: FontWeight.w600,

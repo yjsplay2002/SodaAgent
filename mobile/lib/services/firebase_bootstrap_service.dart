@@ -58,6 +58,8 @@ class FirebaseBootstrapService {
       return _cache(const FirebaseBootstrapState.unsupported());
     }
 
+    await AppFirebaseOptions.ensureLoaded();
+
     final missingKeys = AppFirebaseOptions.missingKeys;
     if (missingKeys.isNotEmpty) {
       return _cache(FirebaseBootstrapState.unconfigured(missingKeys));

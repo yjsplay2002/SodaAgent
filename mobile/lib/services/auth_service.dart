@@ -88,6 +88,8 @@ class AuthService {
       return;
     }
 
+    await AppFirebaseOptions.ensureLoaded();
+
     await GoogleSignIn.instance.initialize(
       clientId: AppFirebaseOptions.googleClientId,
       serverClientId: AppFirebaseOptions.googleServerClientId,
