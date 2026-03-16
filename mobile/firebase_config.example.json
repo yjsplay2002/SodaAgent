@@ -1,0 +1,21 @@
+{
+  "SODA_FIREBASE_WEB_API_KEY": "replace-me",
+  "SODA_FIREBASE_WEB_APP_ID": "replace-me",
+  "SODA_FIREBASE_WEB_MESSAGING_SENDER_ID": "replace-me",
+  "SODA_FIREBASE_WEB_PROJECT_ID": "replace-me",
+  "SODA_FIREBASE_WEB_AUTH_DOMAIN": "replace-me.firebaseapp.com",
+  "SODA_FIREBASE_WEB_STORAGE_BUCKET": "replace-me.firebasestorage.app",
+  "SODA_FIREBASE_ANDROID_API_KEY": "replace-me",
+  "SODA_FIREBASE_ANDROID_APP_ID": "replace-me",
+  "SODA_FIREBASE_ANDROID_MESSAGING_SENDER_ID": "replace-me",
+  "SODA_FIREBASE_ANDROID_PROJECT_ID": "replace-me",
+  "SODA_FIREBASE_ANDROID_STORAGE_BUCKET": "replace-me.firebasestorage.app",
+  "SODA_FIREBASE_IOS_API_KEY": "replace-me",
+  "SODA_FIREBASE_IOS_APP_ID": "replace-me",
+  "SODA_FIREBASE_IOS_MESSAGING_SENDER_ID": "replace-me",
+  "SODA_FIREBASE_IOS_PROJECT_ID": "replace-me",
+  "SODA_FIREBASE_IOS_BUNDLE_ID": "com.sodaagent.sodaAgent",
+  "SODA_FIREBASE_IOS_STORAGE_BUCKET": "replace-me.firebasestorage.app",
+  "SODA_GOOGLE_IOS_CLIENT_ID": "",
+  "SODA_GOOGLE_SERVER_CLIENT_ID": ""
+}

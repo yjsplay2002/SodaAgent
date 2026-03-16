@@ -76,6 +76,48 @@ class UserMarkdownStoreTest(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]["category"], "work")
 
+    def test_scheduled_todo_persists_schedule_metadata(self):
+        todo = self.store.add_todo(
+            user_id=self.user_id,
+            title="Take vitamins",
+            cron="*/5 * * * *",
+            phone_number="+821012345678",
+            voice_message="비타민 먹을 시간이에요.",
+            schedule_timezone="Asia/Seoul",
+        )
+
+        self.assertIsNotNone(todo["schedule"])
+        assert todo["schedule"] is not None
+        self.assertEqual(todo["schedule"]["cron"], "*/5 * * * *")
+        self.assertEqual(todo["schedule"]["timezone"], "Asia/Seoul")
+
+        scheduled = self.store.list_scheduled_todos(self.user_id)
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0]["id"], todo["id"])
+
+    def test_record_todo_schedule_delivery_updates_history(self):
+        todo = self.store.add_todo(
+            user_id=self.user_id,
+            title="Stand up and stretch",
+            cron="0 9 * * *",
+        )
+
+        updated = self.store.record_todo_schedule_delivery(
+            user_id=self.user_id,
+            todo_id=todo["id"],
+            occurrence_at="2026-03-16T00:00:00+00:00",
+            delivered_at="2026-03-16T00:00:10+00:00",
+            channel="phone_call",
+            delivery_status="success",
+            call_sid="CA123",
+        )
+
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(updated["schedule"]["last_delivery_channel"], "phone_call")
+        self.assertEqual(updated["schedule"]["last_call_sid"], "CA123")
+        self.assertEqual(updated["history"][-1]["action"], "scheduled_delivery")
+
 
 if __name__ == "__main__":
     unittest.main()

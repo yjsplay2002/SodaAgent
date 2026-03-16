@@ -1,13 +1,11 @@
-import 'dart:io';
-
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 
+import 'document_export_target.dart';
 import 'voice_session.dart';
 
 final documentExportServiceProvider = Provider(
-  (_) => const DocumentExportService(),
+  (_) => DocumentExportService(),
 );
 
 class ExportedDocument {
@@ -32,7 +30,10 @@ class DocumentExportException implements Exception {
 }
 
 class DocumentExportService {
-  const DocumentExportService();
+  DocumentExportService({DocumentExportTarget? target})
+    : _target = target ?? createDocumentExportTarget();
+
+  final DocumentExportTarget _target;
 
   Future<ExportedDocument> exportConversationAsText({
     required List<TranscriptEntry> transcripts,
@@ -47,19 +48,16 @@ class DocumentExportService {
 
     final now = DateTime.now();
     final fileName = 'soda_conversation_${_fileTimestamp(now)}.txt';
-    final directory = await _resolveExportDirectory();
-    final file = File('${directory.path}/$fileName');
-
     final content = _buildMarkdown(
       entries: entries,
       conversationId: conversationId,
       exportedAt: now,
     );
 
-    await file.writeAsString(content);
+    final path = await _target.writeTextFile(fileName: fileName, content: content);
     await Clipboard.setData(ClipboardData(text: content));
 
-    return ExportedDocument(fileName: fileName, path: file.path, content: content);
+    return ExportedDocument(fileName: fileName, path: path, content: content);
   }
 
   Future<ExportedDocument> exportResponseAsText({
@@ -72,33 +70,16 @@ class DocumentExportService {
 
     final now = DateTime.now();
     final fileName = 'soda_response_${_fileTimestamp(now)}.txt';
-    final directory = await _resolveExportDirectory();
-    final file = File('${directory.path}/$fileName');
-
     final content = _buildResponseMarkdown(
       entry: entry,
       conversationId: conversationId,
       exportedAt: now,
     );
 
-    await file.writeAsString(content);
+    final path = await _target.writeTextFile(fileName: fileName, content: content);
     await Clipboard.setData(ClipboardData(text: entry.text.trim()));
 
-    return ExportedDocument(fileName: fileName, path: file.path, content: content);
-  }
-
-  Future<Directory> _resolveExportDirectory() async {
-    try {
-      final downloads = await getDownloadsDirectory();
-      if (downloads != null) {
-        await downloads.create(recursive: true);
-        return downloads;
-      }
-    } catch (_) {}
-
-    final documents = await getApplicationDocumentsDirectory();
-    await documents.create(recursive: true);
-    return documents;
+    return ExportedDocument(fileName: fileName, path: path, content: content);
   }
 
   String _buildMarkdown({

@@ -30,8 +30,7 @@ library;
 
 import 'dart:async';
 import 'dart:core';
-import 'dart:io';
-import 'dart:io' show Platform;
+import 'dart:io' show Directory, Platform;
 import 'dart:typed_data' show Uint8List, Float32List, Int16List;
 
 import 'package:flutter/foundation.dart' show kIsWeb;

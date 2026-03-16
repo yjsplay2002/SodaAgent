@@ -20,7 +20,7 @@ class LocationService {
       'latitude': position.latitude,
       'longitude': position.longitude,
       'accuracy_meters': position.accuracy,
-      'captured_at': position.timestamp?.toIso8601String(),
+      'captured_at': position.timestamp.toIso8601String(),
     };
   }
 

@@ -10,9 +10,12 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
+  firebase_auth: ^6.0.2
+  firebase_core: ^4.1.1
   web_socket_channel: ^3.0.0
   flutter_riverpod: ^2.4.0
   geolocator: ^13.0.2
+  google_sign_in: ^7.2.0
   flutter_sound:
     path: third_party/flutter_sound
   logger: ^2.0.0

@@ -1,7 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+
+import 'auth_service.dart';
 
 class ConversationTurnData {
   final String turnId;
@@ -27,7 +29,8 @@ class ConversationTurnData {
       text: json['text'] as String? ?? '',
       status: json['status'] as String? ?? 'completed',
       isFinal: json['is_final'] as bool? ?? true,
-      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+      createdAt:
+          DateTime.tryParse(json['created_at'] as String? ?? '') ??
           DateTime.now(),
     );
   }
@@ -62,9 +65,11 @@ class ConversationSummary {
       title: json['title'] as String? ?? 'Untitled',
       preview: json['preview'] as String? ?? '',
       domain: json['domain'] as String? ?? 'general',
-      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+      createdAt:
+          DateTime.tryParse(json['created_at'] as String? ?? '') ??
           DateTime.now(),
-      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '') ??
+      updatedAt:
+          DateTime.tryParse(json['updated_at'] as String? ?? '') ??
           DateTime.now(),
       turnCount: json['turn_count'] as int? ?? 0,
       isActive: json['is_active'] as bool? ?? false,
@@ -95,9 +100,11 @@ class ConversationDetail extends ConversationSummary {
       title: json['title'] as String? ?? 'Untitled',
       preview: json['preview'] as String? ?? '',
       domain: json['domain'] as String? ?? 'general',
-      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+      createdAt:
+          DateTime.tryParse(json['created_at'] as String? ?? '') ??
           DateTime.now(),
-      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '') ??
+      updatedAt:
+          DateTime.tryParse(json['updated_at'] as String? ?? '') ??
           DateTime.now(),
       turnCount: json['turn_count'] as int? ?? 0,
       isActive: json['is_active'] as bool? ?? false,
@@ -111,11 +118,12 @@ class ConversationDetail extends ConversationSummary {
 }
 
 class SessionCatalogService {
-  Future<List<ConversationSummary>> fetchSessions(
-    String serverUrl,
-    String userId,
-  ) async {
-    final payload = await _getJson('$serverUrl/api/sessions/$userId');
+  final AuthService _authService;
+
+  const SessionCatalogService(this._authService);
+
+  Future<List<ConversationSummary>> fetchSessions(String serverUrl) async {
+    final payload = await _getJson('$serverUrl/api/sessions');
     return ((payload['sessions'] as List?) ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(ConversationSummary.fromJson)
@@ -124,12 +132,10 @@ class SessionCatalogService {
 
   Future<ConversationDetail?> fetchConversation(
     String serverUrl,
-    String userId,
     String conversationId,
   ) async {
     try {
-      final payload =
-          await _getJson('$serverUrl/api/sessions/$userId/$conversationId');
+      final payload = await _getJson('$serverUrl/api/sessions/$conversationId');
       return ConversationDetail.fromJson(payload);
     } catch (_) {
       return null;
@@ -137,29 +143,50 @@ class SessionCatalogService {
   }
 
   Future<Map<String, dynamic>> _getJson(String url) async {
-    final client = HttpClient();
+    var response = await _authorizedGet(url);
+    if (response.statusCode == 401) {
+      response = await _authorizedGet(url, forceRefresh: true);
+    }
+
+    final body = utf8.decode(response.bodyBytes);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(_extractMessage(body, response.statusCode));
+    }
+    final decoded = jsonDecode(body);
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
+    throw const FormatException('Unexpected response payload');
+  }
+
+  Future<http.Response> _authorizedGet(
+    String url, {
+    bool forceRefresh = false,
+  }) async {
+    final idToken = await _authService.getIdToken(forceRefresh: forceRefresh);
+    return http.get(
+      Uri.parse(url),
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': 'Bearer $idToken',
+      },
+    );
+  }
+
+  String _extractMessage(String body, int statusCode) {
     try {
-      final request = await client.getUrl(Uri.parse(url));
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      final response = await request.close();
-      final body = await response.transform(utf8.decoder).join();
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HttpException(
-          'Request failed with ${response.statusCode}',
-          uri: Uri.parse(url),
-        );
-      }
       final decoded = jsonDecode(body);
       if (decoded is Map<String, dynamic>) {
-        return decoded;
+        final detail = decoded['detail'];
+        if (detail is String && detail.trim().isNotEmpty) {
+          return detail;
+        }
       }
-      throw const FormatException('Unexpected response payload');
-    } finally {
-      client.close(force: true);
-    }
+    } catch (_) {}
+    return 'Request failed with $statusCode';
   }
 }
 
 final sessionCatalogServiceProvider = Provider<SessionCatalogService>((ref) {
-  return SessionCatalogService();
+  return SessionCatalogService(ref.read(authServiceProvider));
 });

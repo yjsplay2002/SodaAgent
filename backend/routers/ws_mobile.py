@@ -29,6 +29,7 @@ from services.ws_registry import ws_registry
 from services.conversation_store import conversation_store
 from services.session_manager import session_service
 from services.turn_controller import TurnController
+from services.ws_ticket_store import ws_ticket_store
 from soda_agent.agent import live_agent
 from soda_agent.tools.calendar_tools import (
     create_event,
@@ -407,9 +408,15 @@ def _log_event_debug(event) -> None:
     )
 
 
-@router.websocket("/ws/mobile/{user_id}")
-async def mobile_voice_stream(websocket: WebSocket, user_id: str):
+@router.websocket("/ws/mobile")
+async def mobile_voice_stream(websocket: WebSocket):
     """Bidirectional audio streaming between Flutter app and Gemini Live API."""
+    ticket = websocket.query_params.get("ticket")
+    user_id = ws_ticket_store.consume(ticket)
+    if not user_id:
+        await websocket.close(code=4401, reason="Invalid or expired auth ticket")
+        return
+
     await websocket.accept()
     logger.info("Mobile client connected: user=%s", user_id)
 

@@ -1,10 +1,12 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_sound/flutter_sound.dart';
+import 'package:flutter/services.dart';
 import 'package:logger/logger.dart';
+
+import 'audio_platform.dart';
 
 /// Handles microphone capture, speaker playback, and audio file operations.
 ///
@@ -12,10 +14,14 @@ import 'package:logger/logger.dart';
 /// Playback:  PCM 16-bit 24kHz mono ← Gemini Live API (Aoede female voice)
 class AudioService {
   static const double _playbackGain = 3.5;
+  static const MethodChannel _permissionChannel = MethodChannel(
+    'com.sodaagent.soda_agent/permissions',
+  );
 
   FlutterSoundRecorder? _recorder;
   FlutterSoundPlayer? _player;
   FlutterSoundPlayer? _filePlayer;
+  final AudioPlatformAdapter _platform = createAudioPlatformAdapter();
 
   final _audioController = StreamController<Uint8List>.broadcast();
 
@@ -49,7 +55,43 @@ class AudioService {
   }
 
   Future<bool> hasPermission() async {
-    return true;
+    if (!_platform.isAndroid) {
+      return true;
+    }
+
+    try {
+      return await _permissionChannel.invokeMethod<bool>(
+            'hasRecordAudioPermission',
+          ) ??
+          false;
+    } catch (e) {
+      debugPrint('AudioService: hasPermission check failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _requestPermission() async {
+    if (!_platform.isAndroid) {
+      return true;
+    }
+
+    try {
+      return await _permissionChannel.invokeMethod<bool>(
+            'requestRecordAudioPermission',
+          ) ??
+          false;
+    } catch (e) {
+      debugPrint('AudioService: permission request failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _ensurePermission() async {
+    if (await hasPermission()) {
+      return true;
+    }
+
+    return _requestPermission();
   }
 
   // ─── Recording ───
@@ -57,6 +99,10 @@ class AudioService {
   Future<bool> startRecording() async {
     if (_isRecording) return true;
     try {
+      if (!await _ensurePermission()) {
+        debugPrint('AudioService: Record audio permission denied');
+        return false;
+      }
       await _ensureRecorderOpen();
       await _streamRecorder.startRecorder(
         toStream: _audioController.sink,
@@ -65,8 +111,8 @@ class AudioService {
         numChannels: 1,
         bufferSize: 2048,
         audioSource: AudioSource.defaultSource,
-        enableEchoCancellation: !Platform.isIOS,
-        enableNoiseSuppression: !Platform.isIOS,
+        enableEchoCancellation: !_platform.isIOS,
+        enableNoiseSuppression: !_platform.isIOS,
       );
       _isRecording = true;
       debugPrint('AudioService: Recording started');
@@ -108,7 +154,9 @@ class AudioService {
       await _ensurePlayerOpen();
       await _livePlayer.startPlayerFromStream(
         codec: Codec.pcm16,
-        interleaved: false,
+        // Web live playback receives mono PCM as a Uint8List stream.
+        // That path maps to the interleaved feed API in flutter_sound.
+        interleaved: true,
         numChannels: 1,
         sampleRate: sampleRate,
         bufferSize: 8192,
@@ -123,6 +171,15 @@ class AudioService {
       await startFuture;
     } finally {
       _pendingPlaybackStart = null;
+    }
+  }
+
+  void prepareForInteraction() {
+    _platform.prepareForUserGesturePlayback();
+    if (_platform.shouldPrewarmPlaybackOnUserGesture &&
+        !_isPlaying &&
+        _pendingPlaybackStart == null) {
+      unawaited(startPlayback());
     }
   }
 
@@ -168,21 +225,28 @@ class AudioService {
   }) async {
     if (pcmChunks.isEmpty) return null;
     try {
-      final path =
-          '${Directory.systemTemp.path}/soda_${DateTime.now().millisecondsSinceEpoch}.wav';
+      final fileName =
+          'soda_${DateTime.now().millisecondsSinceEpoch}.wav';
 
       int dataSize = 0;
       for (final chunk in pcmChunks) {
         dataSize += chunk.length;
       }
 
-      final file = File(path);
-      final sink = file.openWrite();
-      sink.add(_wavHeader(dataSize, sampleRate));
+      final header = _wavHeader(dataSize, sampleRate);
+      final wavBytes = Uint8List(header.length + dataSize);
+      wavBytes.setRange(0, header.length, header);
+      var offset = header.length;
       for (final chunk in pcmChunks) {
-        sink.add(_applyPlaybackGain(chunk));
+        final adjusted = _applyPlaybackGain(chunk);
+        wavBytes.setRange(offset, offset + adjusted.length, adjusted);
+        offset += adjusted.length;
       }
-      await sink.close();
+
+      final path = await _platform.persistWavBytes(wavBytes, fileName);
+      if (path == null) {
+        return null;
+      }
 
       debugPrint('AudioService: Saved WAV ${dataSize}b -> $path');
       return path;
@@ -239,6 +303,23 @@ class AudioService {
   /// Play a saved WAV file. Calls [onFinished] when playback completes.
   Future<void> playFile(String path, {VoidCallback? onFinished}) async {
     await stopFilePlayback();
+    prepareForInteraction();
+    if (_platform.handlesSavedFilePlayback) {
+      currentlyPlayingFile = path;
+      final started = await _platform.playSavedFile(
+        path,
+        onFinished: () {
+          currentlyPlayingFile = null;
+          debugPrint('AudioService: Web file playback finished');
+          onFinished?.call();
+        },
+      );
+      if (!started) {
+        currentlyPlayingFile = null;
+      }
+      return;
+    }
+
     await _ensureFilePlayerOpen();
     currentlyPlayingFile = path;
     await _savedFilePlayer.startPlayer(
@@ -257,6 +338,7 @@ class AudioService {
   Future<void> stopFilePlayback() async {
     if (currentlyPlayingFile == null) return;
     try {
+      await _platform.stopSavedFilePlayback();
       await _filePlayer?.stopPlayer();
     } catch (_) {}
     currentlyPlayingFile = null;
@@ -272,6 +354,7 @@ class AudioService {
     if (_recorderOpened) _recorder?.closeRecorder();
     if (_playerOpened) _player?.closePlayer();
     if (_filePlayerOpened) _filePlayer?.closePlayer();
+    _platform.disposeAllPersistedAudio();
     _audioController.close();
   }
 

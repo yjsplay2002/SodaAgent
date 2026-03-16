@@ -17,6 +17,7 @@ todo_agent = Agent(
 Manage the user's todos and keep your answers concise.
 When the user wants to add a todo, classify it with a sensible priority and category.
 Use add_todo to save the todo.
+If the user wants a todo to run on a recurring schedule, pass cron and optionally voice_message, phone_number, and schedule_timezone.
 Use list_todos or search_todos when the user asks about existing tasks.
 Use get_todo for one task's current details.
 Use get_todo_history when the user asks what happened with a specific todo over time.

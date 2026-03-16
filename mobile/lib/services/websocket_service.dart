@@ -76,24 +76,34 @@ class WebSocketService {
   Timer? _reconnectTimer;
   int _reconnectAttempt = 0;
   String? _url;
+  Future<String> Function()? _reconnectUrlFactory;
 
   Stream<WsMessage> get messages => _messageController.stream;
   Stream<WsConnectionState> get stateStream => _stateController.stream;
   WsConnectionState get state => _state;
 
-  void connect(String url) {
+  Future<void> connect(
+    String url, {
+    Future<String> Function()? reconnectUrlFactory,
+  }) async {
     _url = url;
+    _reconnectUrlFactory = reconnectUrlFactory;
     _reconnectAttempt = 0;
-    _doConnect();
+    await _doConnect();
   }
 
-  void _doConnect() {
-    if (_url == null) return;
+  Future<void> _doConnect() async {
+    if (_url == null && _reconnectUrlFactory == null) return;
     _setState(WsConnectionState.connecting);
-    debugPrint('WS: Connecting to $_url');
 
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(_url!));
+      final nextUrl = (_reconnectAttempt > 0 && _reconnectUrlFactory != null)
+          ? await _reconnectUrlFactory!()
+          : _url!;
+      _url = nextUrl;
+      debugPrint('WS: Connecting to $nextUrl');
+
+      _channel = WebSocketChannel.connect(Uri.parse(nextUrl));
       _channel!.ready
           .then((_) {
             debugPrint('WS: Connected successfully');
@@ -150,12 +160,14 @@ class WebSocketService {
 
   void _scheduleReconnect() {
     _reconnectTimer?.cancel();
-    if (_url == null) return;
+    if (_url == null && _reconnectUrlFactory == null) return;
     final delay = Duration(
       seconds: [1, 2, 4, 8, 15, 30][_reconnectAttempt.clamp(0, 5)],
     );
     _reconnectAttempt++;
-    _reconnectTimer = Timer(delay, _doConnect);
+    _reconnectTimer = Timer(delay, () {
+      unawaited(_doConnect());
+    });
   }
 
   void sendAudio(Uint8List pcmData) {
@@ -207,6 +219,7 @@ class WebSocketService {
 
   void disconnect() {
     _url = null;
+    _reconnectUrlFactory = null;
     _reconnectTimer?.cancel();
     _channel?.sink.close();
     _channel = null;

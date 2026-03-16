@@ -4,7 +4,7 @@ set -euo pipefail
 # SodaAgent - One-command GCP deployment script
 # Usage: ./infrastructure/deploy.sh
 
-PROJECT_ID="soda-agent-hackathon"
+PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-soda-agent-hackathon}"
 REGION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
 SERVICE_NAME="soda-agent"
 REPO_NAME="soda-agent-repo"
@@ -58,7 +58,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --session-affinity \
     --allow-unauthenticated \
     --set-secrets "$SECRETS" \
-    --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,CALENDAR_TIMEZONE=Asia/Seoul"
+    --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,CALENDAR_TIMEZONE=Asia/Seoul,FIREBASE_PROJECT_ID=sodaagent,FIREBASE_STORAGE_BUCKET=sodaagent.firebasestorage.app"
 
 # 3. Get the service URL
 echo "[3/4] Getting service URL..."
@@ -82,4 +82,4 @@ echo ""
 echo "=== Deployment Complete ==="
 echo "Service URL: $SERVICE_URL"
 echo "Health:      $SERVICE_URL/health"
-echo "WebSocket:   ${SERVICE_URL/https/wss}/ws/mobile/{user_id}"
+echo "WebSocket:   ${SERVICE_URL/https/wss}/ws/mobile?ticket={ticket}"

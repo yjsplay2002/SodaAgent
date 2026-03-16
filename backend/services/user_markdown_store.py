@@ -8,12 +8,16 @@ JSON block that the server updates transactionally.
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from croniter import croniter
 
 
 VALID_TODO_STATUSES = {"todo", "in_progress", "review", "done"}
@@ -39,6 +43,10 @@ class UserMarkdownStore:
         details: str | None = None,
         priority: str | None = None,
         category: str | None = None,
+        cron: str | None = None,
+        phone_number: str | None = None,
+        voice_message: str | None = None,
+        schedule_timezone: str | None = None,
     ) -> dict[str, Any]:
         data = self.load_user_data(user_id)
         now = self._now()
@@ -59,6 +67,12 @@ class UserMarkdownStore:
             "created_at": now,
             "updated_at": now,
             "last_activity_at": now,
+            "schedule": self._build_schedule(
+                cron=cron,
+                phone_number=phone_number,
+                voice_message=voice_message,
+                schedule_timezone=schedule_timezone,
+            ),
             "history": [
                 {
                     "timestamp": now,
@@ -228,8 +242,98 @@ class UserMarkdownStore:
             todo.setdefault("priority", "medium")
             todo.setdefault("category", "general")
             todo.setdefault("status", "todo")
+            schedule = todo.get("schedule")
+            if schedule is None:
+                todo["schedule"] = None
+            else:
+                schedule.setdefault("enabled", True)
+                schedule.setdefault("timezone", "UTC")
+                schedule.setdefault("phone_number", None)
+                schedule.setdefault("voice_message", None)
+                schedule.setdefault("last_scheduled_run_at", None)
+                schedule.setdefault("last_delivery_at", None)
+                schedule.setdefault("last_delivery_channel", None)
+                schedule.setdefault("last_delivery_status", None)
+                schedule.setdefault("last_delivery_error", None)
             todo.setdefault("history", [])
         return parsed
+
+    def list_user_ids(self) -> list[str]:
+        """Return all known user ids in the local markdown store."""
+        return sorted(path.stem for path in self._base_dir.glob("*.md"))
+
+    def list_scheduled_todos(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """Return todos that have an active cron schedule."""
+        user_ids = [user_id] if user_id is not None else self.list_user_ids()
+        scheduled_todos: list[dict[str, Any]] = []
+        for current_user_id in user_ids:
+            data = self.load_user_data(current_user_id)
+            for todo in data["todos"]:
+                schedule = todo.get("schedule")
+                if not isinstance(schedule, dict) or not schedule.get("cron"):
+                    continue
+                if not schedule.get("enabled", True):
+                    continue
+                if todo.get("status") == "done":
+                    continue
+                snapshot = deepcopy(todo)
+                snapshot["user_id"] = current_user_id
+                scheduled_todos.append(snapshot)
+        return scheduled_todos
+
+    def record_todo_schedule_delivery(
+        self,
+        user_id: str,
+        todo_id: str,
+        *,
+        occurrence_at: str,
+        delivered_at: str,
+        channel: str,
+        delivery_status: str,
+        error_message: str | None = None,
+        call_sid: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Record the outcome of one scheduled todo delivery attempt."""
+        data = self.load_user_data(user_id)
+        todo = self._find_todo(data, todo_id)
+        if todo is None:
+            return None
+
+        schedule = todo.setdefault("schedule", {})
+        schedule["last_scheduled_run_at"] = occurrence_at
+        schedule["last_delivery_at"] = delivered_at
+        schedule["last_delivery_channel"] = channel
+        schedule["last_delivery_status"] = delivery_status
+        schedule["last_delivery_error"] = error_message
+        if call_sid:
+            schedule["last_call_sid"] = call_sid
+        else:
+            schedule.pop("last_call_sid", None)
+
+        todo["updated_at"] = delivered_at
+        todo["last_activity_at"] = delivered_at
+        note = (
+            f"Scheduled delivery via {channel} ({delivery_status})"
+            if not error_message
+            else f"Scheduled delivery via {channel} failed: {error_message}"
+        )
+        todo["history"].append(
+            {
+                "timestamp": delivered_at,
+                "action": "scheduled_delivery",
+                "note": note,
+                "from_status": todo["status"],
+                "to_status": todo["status"],
+            }
+        )
+        self._append_activity(
+            data,
+            action="todo_schedule_delivery",
+            note=f"Todo '{todo['title']}' -> {channel} ({delivery_status})",
+            todo_id=todo_id,
+        )
+        self._write_user_data(user_id, data)
+        return deepcopy(todo)
 
     def _write_user_data(self, user_id: str, data: dict[str, Any]) -> None:
         data["updated_at"] = self._now()
@@ -388,6 +492,48 @@ class UserMarkdownStore:
 
     def _normalize_text(self, value: str) -> str:
         return value.strip().lower()
+
+    def _build_schedule(
+        self,
+        *,
+        cron: str | None,
+        phone_number: str | None,
+        voice_message: str | None,
+        schedule_timezone: str | None,
+    ) -> dict[str, Any] | None:
+        normalized_cron = (cron or "").strip()
+        normalized_phone = (phone_number or "").strip() or None
+        normalized_voice_message = (voice_message or "").strip() or None
+        if not normalized_cron:
+            if normalized_phone or normalized_voice_message or schedule_timezone:
+                raise ValueError("cron is required when setting a scheduled todo voice notification.")
+            return None
+
+        normalized_cron = " ".join(normalized_cron.split())
+        if not croniter.is_valid(normalized_cron):
+            raise ValueError("Invalid cron expression for todo schedule.")
+
+        timezone_name = (
+            (schedule_timezone or os.getenv("DEFAULT_SCHEDULE_TIMEZONE") or "UTC")
+            .strip()
+        )
+        try:
+            ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown schedule timezone: {timezone_name}") from exc
+
+        return {
+            "cron": normalized_cron,
+            "timezone": timezone_name,
+            "phone_number": normalized_phone,
+            "voice_message": normalized_voice_message,
+            "enabled": True,
+            "last_scheduled_run_at": None,
+            "last_delivery_at": None,
+            "last_delivery_channel": None,
+            "last_delivery_status": None,
+            "last_delivery_error": None,
+        }
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()

@@ -1,18 +1,19 @@
 import 'dart:convert';
-import 'dart:io';
-import 'dart:math';
+
+import 'auth_service.dart';
+import 'web_storage.dart';
 
 class LocalIdentityService {
-  static const _fileName = 'soda_session.json';
+  static const _storageKey = 'soda_session';
+  final AuthService _authService;
+  final WebStorage _storage = createWebStorage();
 
-  Future<File> _sessionFile() async =>
-      File('${Directory.systemTemp.path}/$_fileName');
+  LocalIdentityService(this._authService);
 
   Future<Map<String, dynamic>> _readSession() async {
     try {
-      final file = await _sessionFile();
-      if (!await file.exists()) return {};
-      final raw = await file.readAsString();
+      final raw = _storage.getItem(_storageKey);
+      if (raw == null || raw.isEmpty) return {};
       final decoded = jsonDecode(raw);
       if (decoded is Map<String, dynamic>) {
         return decoded;
@@ -22,35 +23,38 @@ class LocalIdentityService {
   }
 
   Future<void> _writeSession(Map<String, dynamic> data) async {
-    final file = await _sessionFile();
-    await file.writeAsString(jsonEncode(data));
-  }
-
-  String _newId(String prefix) {
-    final random = Random.secure().nextInt(1 << 32).toRadixString(16);
-    return '$prefix-${DateTime.now().millisecondsSinceEpoch}-$random';
+    await _storage.setItem(_storageKey, jsonEncode(data));
   }
 
   Future<String> getOrCreateUserId() async {
+    final authenticatedUserId = await _authService.getCurrentUserId();
     final session = await _readSession();
     final userId = session['user_id'] as String?;
-    if (userId != null && userId.isNotEmpty) return userId;
+    if (userId == authenticatedUserId) {
+      return authenticatedUserId;
+    }
 
-    final newUserId = _newId('user');
-    session['user_id'] = newUserId;
+    session['user_id'] = authenticatedUserId;
+    session.remove('conversation_id');
     await _writeSession(session);
-    return newUserId;
+    return authenticatedUserId;
   }
 
   Future<String?> getConversationId() async {
+    final userId = await _authService.getCurrentUserId();
     final session = await _readSession();
+    if (session['user_id'] != userId) {
+      return null;
+    }
     final conversationId = session['conversation_id'] as String?;
     if (conversationId == null || conversationId.isEmpty) return null;
     return conversationId;
   }
 
   Future<void> saveConversationId(String? conversationId) async {
+    final userId = await _authService.getCurrentUserId();
     final session = await _readSession();
+    session['user_id'] = userId;
     if (conversationId == null || conversationId.isEmpty) {
       session.remove('conversation_id');
     } else {

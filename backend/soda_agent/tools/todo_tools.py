@@ -11,10 +11,15 @@ def add_todo(
     details: str | None = None,
     priority: str | None = None,
     category: str | None = None,
+    cron: str | None = None,
+    phone_number: str | None = None,
+    voice_message: str | None = None,
+    schedule_timezone: str | None = None,
 ) -> dict:
     """Create a todo for the current user.
 
     If priority or category are omitted, the server infers them.
+    When cron is provided, the todo becomes a scheduled voice todo.
     """
     user_id = get_active_user_id()
     if not user_id:
@@ -30,15 +35,26 @@ def add_todo(
             details=details,
             priority=priority,
             category=category,
+            cron=cron,
+            phone_number=phone_number,
+            voice_message=voice_message,
+            schedule_timezone=schedule_timezone,
         )
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
+
+    schedule = todo.get("schedule")
+    schedule_message = ""
+    if isinstance(schedule, dict):
+        schedule_message = (
+            f" It will run on cron {schedule['cron']} in timezone {schedule['timezone']}."
+        )
 
     return {
         "status": "success",
         "message": (
             f"Saved todo '{todo['title']}' with priority {todo['priority']} "
-            f"in category {todo['category']}."
+            f"in category {todo['category']}.{schedule_message}"
         ),
         "todo": todo,
     }

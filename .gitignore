@@ -51,6 +51,9 @@ infrastructure/terraform/.terraform.lock.hcl
 credentials.json
 service-account.json
 .gcloud-config/
+mobile/firebase_config.json
+mobile/android/app/google-services.json
+mobile/ios/Runner/GoogleService-Info.plist
 
 # ADK local session data
 .adk/

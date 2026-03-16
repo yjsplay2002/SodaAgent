@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/theme.dart';
+import '../services/auth_service.dart';
 import '../services/document_export_service.dart';
 import '../services/session_catalog_service.dart';
 import '../services/voice_session.dart';
@@ -95,6 +96,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildHeader(VoiceSessionState session) {
+    final currentUser = ref.watch(authStateProvider).valueOrNull;
     final connected = session.connectionState == WsConnectionState.connected;
     final hasTranscripts = session.transcripts.any(
       (entry) => entry.text.trim().isNotEmpty,
@@ -134,14 +136,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const SizedBox(width: 8),
           Text(label, style: Theme.of(context).textTheme.bodyMedium),
           const Spacer(),
-          const Text(
-            'Soda',
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w600,
-              color: Colors.white,
-              letterSpacing: 1,
-            ),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Soda',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                  letterSpacing: 1,
+                ),
+              ),
+              if (currentUser?.displayName?.trim().isNotEmpty ?? false)
+                Text(
+                  currentUser!.displayName!.trim(),
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.45),
+                    fontSize: 11,
+                  ),
+                ),
+            ],
           ),
           const Spacer(),
           Row(
@@ -165,11 +180,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 icon: const Icon(Icons.history_rounded, color: Colors.white),
                 tooltip: 'Sessions',
               ),
+              IconButton(
+                onPressed: _signOut,
+                icon: const Icon(Icons.logout_rounded, color: Colors.white),
+                tooltip: 'Sign out',
+              ),
             ],
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _signOut() async {
+    try {
+      ref.read(voiceSessionProvider.notifier).disconnect();
+      await ref.read(authServiceProvider).signOut();
+    } on AuthException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showSnackBar(error.message);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      _showSnackBar('Failed to sign out.');
+    }
   }
 
   Widget _buildStateLabel(VoiceSessionState session) {
@@ -312,14 +349,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _saveResponse(TranscriptEntry entry, String? conversationId) async {
+  Future<void> _saveResponse(
+    TranscriptEntry entry,
+    String? conversationId,
+  ) async {
     try {
       final exported = await ref
           .read(documentExportServiceProvider)
-          .exportResponseAsText(
-            entry: entry,
-            conversationId: conversationId,
-          );
+          .exportResponseAsText(entry: entry, conversationId: conversationId);
       if (!mounted) return;
       _showSnackBar('Saved to ${exported.path} (copied to clipboard)');
     } on DocumentExportException catch (error) {
@@ -449,10 +486,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   const SizedBox(height: 8),
                   Text(
                     latest.conversationsError!,
-                    style: TextStyle(
-                      color: Colors.red.shade300,
-                      fontSize: 12,
-                    ),
+                    style: TextStyle(color: Colors.red.shade300, fontSize: 12),
                   ),
                 ],
               ],
